@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 type recorder struct {

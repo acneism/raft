@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gliedabrennung/raft/internal/fsx"
-	"github.com/gliedabrennung/raft/internal/kvfsm"
-	"github.com/gliedabrennung/raft/node"
+	"github.com/acneism/raft/internal/fsx"
+	"github.com/acneism/raft/internal/kvfsm"
+	"github.com/acneism/raft/node"
 )
 
 var roundN = flag.Int("round.n", 0, "rounds per measurement in TestRoundTime; 0 skips it")

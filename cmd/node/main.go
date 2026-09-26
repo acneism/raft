@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/internal/config"
-	"github.com/gliedabrennung/raft/internal/kvfsm"
-	"github.com/gliedabrennung/raft/node"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/internal/config"
+	"github.com/acneism/raft/internal/kvfsm"
+	"github.com/acneism/raft/node"
 )
 
 type options struct {

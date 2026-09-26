@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 type readyQueue struct {

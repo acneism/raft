@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/internal/fsx"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/internal/fsx"
 )
 
 const (

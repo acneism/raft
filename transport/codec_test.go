@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 var sampleMessages = []raft.Message{

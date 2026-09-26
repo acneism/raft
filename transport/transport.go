@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 var ErrClosed = errors.New("transport: closed")

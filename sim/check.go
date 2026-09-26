@@ -1,7 +1,7 @@
 package sim
 
 import (
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 type entryKey struct{ index, term uint64 }

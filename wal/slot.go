@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/internal/fsx"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/internal/fsx"
 )
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)

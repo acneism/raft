@@ -5,7 +5,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 type waiter struct {

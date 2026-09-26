@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/internal/fsx"
-	"github.com/gliedabrennung/raft/transport"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/internal/fsx"
+	"github.com/acneism/raft/transport"
 )
 
 func (n *Node) snapDir(s raft.SnapshotMeta) string {

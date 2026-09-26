@@ -7,7 +7,7 @@ import (
 	"math/rand/v2"
 	"slices"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 type Bug uint8

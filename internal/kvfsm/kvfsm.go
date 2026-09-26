@@ -14,9 +14,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/internal/fsx"
-	"github.com/gliedabrennung/raft/node"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/internal/fsx"
+	"github.com/acneism/raft/node"
 )
 
 const (

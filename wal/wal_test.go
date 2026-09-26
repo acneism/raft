@@ -10,7 +10,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 var _ raft.Storage = (*Log)(nil)

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/gliedabrennung/raft"
+	"github.com/acneism/raft"
 )
 
 var errDecode = errors.New("transport: malformed message")

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gliedabrennung/raft"
-	"github.com/gliedabrennung/raft/transport"
-	"github.com/gliedabrennung/raft/wal"
+	"github.com/acneism/raft"
+	"github.com/acneism/raft/transport"
+	"github.com/acneism/raft/wal"
 )
 
 var (
