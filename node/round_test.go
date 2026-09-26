@@ -164,3 +164,27 @@ func TestRoundTime(t *testing.T) {
 		}
 	}
 }
+
+var failovers = flag.Int("failover.n", 0, "leader failovers in TestFailoverTime; 0 skips it")
+
+func TestFailoverTime(t *testing.T) {
+	if *failovers == 0 {
+		t.Skip("run with -failover.n=N")
+	}
+	const tick = 2 * time.Millisecond
+	election := 50 * tick
+	c := newClusterFSM(t, 3, 1<<30, func(cfg *node.Config) { cfg.TickInterval = tick; cfg.ElectionTicks = 50; cfg.HeartbeatTicks = 5 })
+	var d dist
+	for i := range *failovers {
+		old := c.leader(5 * time.Second)
+		c.write(fmt.Sprintf("before%d", i), "x")
+		start := time.Now()
+		c.stop(old.id)
+		c.write(fmt.Sprintf("after%d", i), "x")
+		d = append(d, time.Since(start))
+		c.start(old.id)
+		c.converged(5 * time.Second)
+	}
+	t.Logf("election timeout %v, first write after the leader died: %v, max %v (%.2f election timeouts)",
+		election, d, slices.Max(d), float64(slices.Max(d))/float64(election))
+}

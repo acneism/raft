@@ -27,7 +27,7 @@ type options struct {
 	dir        string
 	httpAddr   string
 	httpOffset int
-	tick       time.Duration
+	election   time.Duration
 	noSync     bool
 }
 
@@ -40,7 +40,7 @@ func main() {
 	flag.StringVar(&o.dir, "dir", "data", "data directory")
 	flag.StringVar(&o.httpAddr, "http", "", "HTTP API address of a single node (default: Raft port + http-offset)")
 	flag.IntVar(&o.httpOffset, "http-offset", 1000, "HTTP API port offset from the Raft port")
-	flag.DurationVar(&o.tick, "tick", 100*time.Millisecond, "Raft tick; the election timeout is 10 ticks")
+	flag.DurationVar(&o.election, "election-timeout", time.Second, "Raft election timeout; followers wait 1-2 of it before campaigning")
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
 	flag.Parse()
 
@@ -118,7 +118,7 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 		Dir:          filepath.Join(dir, "raft"),
 		Peers:        peers,
 		StateMachine: fsm,
-		TickInterval: o.tick,
+		TickInterval: o.election / 100,
 		PreVote:      true,
 		CheckQuorum:  true,
 		NoSync:       o.noSync,

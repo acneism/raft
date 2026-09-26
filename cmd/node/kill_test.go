@@ -79,7 +79,7 @@ func buildBinary(t *testing.T) string {
 
 func (h *harness) start(p *proc) {
 	h.t.Helper()
-	args := []string{"--id", fmt.Sprint(p.id), "--raftfile", h.rf, "--env", "test", "--dir", h.dir, "--http", p.http, "--tick", "20ms"}
+	args := []string{"--id", fmt.Sprint(p.id), "--raftfile", h.rf, "--env", "test", "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
 	if *killNoSync {
 		args = append(args, "--unsafe-no-fsync")
 	}

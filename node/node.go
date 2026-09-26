@@ -124,13 +124,13 @@ func Open(cfg Config) (*Node, error) {
 		cfg.Listen = cfg.Peers[cfg.ID]
 	}
 	if cfg.TickInterval <= 0 {
-		cfg.TickInterval = 100 * time.Millisecond
+		cfg.TickInterval = 10 * time.Millisecond
 	}
 	if cfg.ElectionTicks <= 0 {
-		cfg.ElectionTicks = 10
+		cfg.ElectionTicks = 100
 	}
 	if cfg.HeartbeatTicks <= 0 {
-		cfg.HeartbeatTicks = 1
+		cfg.HeartbeatTicks = 10
 	}
 	if cfg.SnapshotEntries == 0 {
 		cfg.SnapshotEntries = 8192
@@ -245,6 +245,21 @@ func (n *Node) Propose(data []byte) (Proposal, error) {
 	}
 	n.wake()
 	return Proposal{Index: idx, Term: term}, nil
+}
+
+func (n *Node) ProposeIn(term uint64, data []byte) (Proposal, error) {
+	n.mu.Lock()
+	if n.core.Status().Term != term {
+		n.mu.Unlock()
+		return Proposal{}, ErrNotLeader
+	}
+	idx, t, err := n.core.Propose(data)
+	n.mu.Unlock()
+	if err != nil {
+		return Proposal{}, err
+	}
+	n.wake()
+	return Proposal{Index: idx, Term: t}, nil
 }
 
 func (n *Node) Status() raft.Status {

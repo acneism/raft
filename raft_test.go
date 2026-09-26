@@ -703,3 +703,47 @@ func TestHardStateCommitCoversOnlyDurableEntries(t *testing.T) {
 		t.Fatalf("second ready: commit %d must-sync %v, want 3 and false", rd.HardState.Commit, rd.MustSync)
 	}
 }
+
+func TestVoteRequestsAreRetried(t *testing.T) {
+	for _, pv := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prevote=%v", pv), func(t *testing.T) {
+			var opts []func(*Config)
+			if pv {
+				opts = append(opts, preVote)
+			}
+			nw := newNetwork(t, 3, opts...)
+			dropped := false
+			nw.filter = func(m Message) bool {
+				if (m.Type == MsgVote || m.Type == MsgPreVote) && !dropped {
+					dropped = true
+					return false
+				}
+				return true
+			}
+			nw.cut["3"] = true
+			c := nw.nodes["1"].core
+			c.campaign(c.preVote)
+			nw.deliver(nw.nodes["1"].ready())
+			if c.state == StateLeader {
+				t.Fatal("won although the only reachable vote request was dropped")
+			}
+			nw.tick("1", testHeartbeat)
+			if c.state != StateLeader {
+				t.Fatalf("still %s after the retry", c.state)
+			}
+		})
+	}
+}
+
+func TestPreVoteTieBreak(t *testing.T) {
+	nw := newNetwork(t, 3, preVote)
+	nw.cut["3"] = true
+	n1, n2 := nw.nodes["1"].core, nw.nodes["2"].core
+	n1.campaign(true)
+	n2.campaign(true)
+	nw.deliver(append(nw.nodes["1"].ready(), nw.nodes["2"].ready()...))
+	if n2.state != StateLeader || n1.state != StateFollower || n1.term != n2.term || n2.term != 1 {
+		t.Fatalf("n1 %s term %d, n2 %s term %d: want a single election won by the higher ID",
+			n1.state, n1.term, n2.state, n2.term)
+	}
+}

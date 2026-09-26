@@ -466,3 +466,16 @@ func TestInterruptedRestoreIsRepeated(t *testing.T) {
 	}
 	c.converged(10 * time.Second)
 }
+
+func TestProposeInRejectsOtherTerm(t *testing.T) {
+	c := newCluster(t, 3, nil)
+	l := c.leader(5 * time.Second)
+	term := l.n.Status().Term
+	if _, err := l.n.ProposeIn(term+1, nil); !errors.Is(err, node.ErrNotLeader) {
+		t.Fatalf("proposal for a future term: %v", err)
+	}
+	p, err := l.n.ProposeIn(term, kvfsm.Command("k", "v"))
+	if err != nil || p.Term != term {
+		t.Fatalf("proposal in the current term: %+v, %v", p, err)
+	}
+}

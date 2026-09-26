@@ -62,6 +62,7 @@ type Core struct {
 	noopIndex   uint64
 	durableTerm uint64
 	sendPending bool
+	yield       bool
 
 	msgs             []Message
 	msgsAfterPersist []Message
@@ -183,6 +184,14 @@ func (c *Core) tickElection() {
 	if c.promotable() && c.electionElapsed >= c.randomizedElectionTimeout {
 		c.electionElapsed = 0
 		c.campaign(c.preVote)
+		return
+	}
+	if c.state == StatePreCandidate || c.state == StateCandidate {
+		c.heartbeatElapsed++
+		if c.heartbeatElapsed >= c.heartbeatTimeout {
+			c.heartbeatElapsed = 0
+			c.requestVotes(c.state == StatePreCandidate)
+		}
 	}
 }
 
@@ -249,7 +258,9 @@ func (c *Core) becomeFollower(term uint64, lead NodeID) {
 
 func (c *Core) becomePreCandidate() {
 	c.trk.resetVotes()
+	c.yield = false
 	c.lead = None
+	c.heartbeatElapsed = 0
 	c.state = StatePreCandidate
 }
 
@@ -270,13 +281,10 @@ func (c *Core) becomeLeader() {
 }
 
 func (c *Core) campaign(pre bool) {
-	voteType, term := MsgVote, c.term+1
 	if pre {
-		voteType = MsgPreVote
 		c.becomePreCandidate()
 	} else {
 		c.becomeCandidate()
-		term = c.term
 	}
 	if c.trk.recordVote(c.id, true) == voteWon {
 		if pre {
@@ -286,9 +294,17 @@ func (c *Core) campaign(pre bool) {
 		}
 		return
 	}
+	c.requestVotes(pre)
+}
+
+func (c *Core) requestVotes(pre bool) {
+	voteType, term := MsgVote, c.term
+	if pre {
+		voteType, term = MsgPreVote, c.term+1
+	}
 	last, lastTerm := c.log.lastIndex(), c.log.lastTerm()
 	for _, id := range c.trk.voters {
-		if id != c.id {
+		if _, voted := c.trk.votes[id]; !voted && id != c.id {
 			c.send(Message{To: id, Type: voteType, Term: term, Index: last, LogTerm: lastTerm})
 		}
 	}
@@ -363,6 +379,9 @@ func (c *Core) handleVote(m Message) {
 		return
 	}
 	c.send(Message{To: m.From, Type: respType, Term: m.Term})
+	if m.Type == MsgPreVote && c.state == StatePreCandidate && m.From > c.id {
+		c.yield = true
+	}
 	if m.Type == MsgVote {
 		c.electionElapsed = 0
 		c.vote = m.From
@@ -404,9 +423,12 @@ func (c *Core) stepCandidate(m Message) {
 	case respType:
 		switch c.trk.recordVote(m.From, !m.Reject) {
 		case voteWon:
-			if c.state == StatePreCandidate {
+			switch {
+			case c.state == StatePreCandidate && c.yield:
+				c.becomeFollower(c.term, None)
+			case c.state == StatePreCandidate:
 				c.campaign(false)
-			} else {
+			default:
 				c.becomeLeader()
 			}
 		case voteLost:

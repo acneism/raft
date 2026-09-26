@@ -55,14 +55,19 @@ func (n *Node) run() {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.cfg.TickInterval)
 	defer ticker.Stop()
+	start, ticks := time.Now(), 0
 	for {
 		select {
 		case <-n.stopc:
 			return
-		case <-ticker.C:
+		case now := <-ticker.C:
+			due := int(now.Sub(start) / n.cfg.TickInterval)
+			ticks = max(ticks, due-2*n.cfg.ElectionTicks)
 			n.mu.Lock()
-			n.core.Tick()
-			n.observe()
+			for ; ticks < due; ticks++ {
+				n.core.Tick()
+				n.observe()
+			}
 			n.mu.Unlock()
 		case m := <-n.recvc:
 			n.mu.Lock()
