@@ -90,3 +90,7 @@ docker run -p 8001:8001 -p 9001:9001 raft-node --id 1 --env production
 2 raft-2.internal:8001
 3 raft-3.internal:8001
 ```
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE).
