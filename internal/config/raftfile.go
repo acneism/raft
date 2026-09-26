@@ -78,7 +78,11 @@ func ParseRaftfile(path string) (*ClusterConfig, error) {
 		return nil, fmt.Errorf("raftfile: read error: %w", err)
 	}
 
-	if len(cfg.Envs) == 0 || (len(cfg.Envs) == 1 && len(cfg.Envs["default"]) == 0) {
+	total := 0
+	for _, peers := range cfg.Envs {
+		total += len(peers)
+	}
+	if total == 0 {
 		return nil, fmt.Errorf("raftfile: no peers defined")
 	}
 

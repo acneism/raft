@@ -18,7 +18,7 @@ COPY --from=builder /app/raft-node /app/raft-node
 
 COPY Raftfile /app/Raftfile
 
-EXPOSE 8001 8002 8003 8004 8005
+EXPOSE 8001 8002 8003 9001 9002 9003
 
 ENTRYPOINT ["/app/raft-node"]
 CMD ["--id", "1", "--env", "production"]

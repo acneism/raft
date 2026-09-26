@@ -129,3 +129,20 @@ func TestGetOtherPeers(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRaftfile_SingleEnv(t *testing.T) {
+	path := writeTempRaftfile(t, "[test]\n1 127.0.0.1:8001\n")
+	cfg, err := ParseRaftfile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peers, err := cfg.GetEnv("test"); err != nil || len(peers) != 1 {
+		t.Fatalf("peers %v, err %v", peers, err)
+	}
+}
+
+func TestParseRaftfile_Empty(t *testing.T) {
+	if _, err := ParseRaftfile(writeTempRaftfile(t, "[test]\n")); err == nil {
+		t.Fatal("expected an error for a Raftfile without peers")
+	}
+}

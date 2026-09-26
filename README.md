@@ -1,98 +1,89 @@
-# Raft Implementation in Go
+# Raft for BitKV
 
-This project is an implementation of the Raft consensus algorithm in Go. It supports leader election, log replication, state persistence, and flexible configuration via a `Raftfile`.
+A Raft implementation in Go that is being built to replace hashicorp/raft in BitKV. The design and the plan are in
+the specification; progress reports are in [docs/](docs).
 
 ## Features
 
-- **Leader Election:** Implemented with randomized timeouts to ensure cluster stability.
-- **Election Restriction:** Nodes only vote for candidates with a log that is as up-to-date as their own.
-- **Log Replication:** The leader replicates entries to all followers and commits them once a majority acknowledgment is received.
-- **Persistence:** Node state (`currentTerm`, `votedFor`, `log`) is saved to JSON files on disk, allowing nodes to recover after a crash.
-- **Raftfile:** Support for environment sections (e.g., `[local]`, `[production]`) for easy switching between configurations (WIP).
-- **Multi-node Runner:** Ability to start the entire cluster with a single command for local development.
-- **Docker Support:** Ready for containerization with a provided Dockerfile.
-- **Unit Testing:** Comprehensive tests for configuration, Raft core logic, and storage.
+- **Deterministic core.** The Raft state machine does no IO, starts no goroutines and never reads the clock.
+  It implements elections with PreVote and CheckQuorum, fast log backtracking, pipelined replication with
+  byte and message limits, and snapshots.
+- **Leader writes in parallel.** AppendEntries leave before the leader's own fsync; the leader counts itself
+  towards the quorum only after that fsync. A round takes max(leader fsync, network + follower fsync).
+- **Segmented log.** CRC32C records chained across the log, preallocated segments, logical compaction to any
+  index, HardState in two alternating slots. Works on Linux and Windows.
+- **Transport.** Framed TCP with a hand-written binary codec, mutual TLS with the node ID taken from the
+  certificate, per-peer queues with heartbeat coalescing, and a separate connection for snapshot transfers
+  that resume after a disconnect.
+- **Node.** `Propose` returns the entry's index and term without waiting for IO, `Wait` always completes,
+  leadership events are never lost, and a state machine that keeps its own data on disk is replayed only from
+  its durable index.
+- **Deterministic simulation.** Partitions, message loss, duplication and delay, crashes with torn writes, full
+  disks and clock skew, with the Raft safety invariants checked after every step.
 
 ## Project Structure
 
-- `cmd/node/`: The entry point for the application.
-- `internal/raft/`: Core Raft algorithm logic (states, RPC handlers, replication).
-- `internal/config/`: `Raftfile` parsing and configuration management.
-- `internal/storage/`: Persistent state storage logic.
-- `internal/transport/`: HTTP transport layer for node communication.
+- `.` (package `raft`): the core state machine.
+- `wal/`: the segmented log and HardState storage.
+- `transport/`: TCP transport and snapshot transfer.
+- `node/`: runs the core with the log, the transport and a state machine.
+- `sim/`: the deterministic cluster simulator.
+- `cmd/node/`: a demo key-value node over HTTP, and the `kill -9` test harness.
+- `internal/config/`: `Raftfile` parsing.
+- `internal/kvfsm/`: the demo key-value state machine.
 
 ## Quick Start
 
-### 1. Build the Project
-
-```bash
-go build -o raft-node ./cmd/node
-```
-
-### 2. Run the Entire Cluster Locally
-
-The easiest way to test the project is to start all nodes simultaneously:
+Run the whole `[local]` cluster from the `Raftfile` in one process:
 
 ```bash
 go run ./cmd/node --all --env local
 ```
-*This will start all services defined in the `[local]` section of your `Raftfile`.*
 
-### 3. Run a Single Node
-
-If you want to run nodes in separate terminals or on different servers:
+Or one node per terminal:
 
 ```bash
-# In terminal 1
 go run ./cmd/node --id 1 --env local
-
-# In terminal 2
-go run ./cmd/node --id 2 --env local
 ```
+
+Each node serves its HTTP API on the Raft port plus `--http-offset` (1000 by default), so node 1 of the
+`[local]` environment answers on port 9001.
 
 ## Using the API
 
-### Check Status
-Check the node's current role and term:
 ```bash
-curl http://localhost:8001/status
+curl http://localhost:9001/status
+curl -X PUT http://localhost:9001/kv/greeting -d 'hello'
+curl http://localhost:9001/kv/greeting
+curl http://localhost:9001/digest
 ```
 
-### Submit a Command
-Append a message to the cluster's log (send to the leader):
-```bash
-curl -X POST http://localhost:8001/command -d '{"command": "my message"}'
-```
+Writes must go to the leader; other nodes answer 503 with the leader's ID in the `X-Raft-Leader` header.
+Reads are served from the local state machine and may be stale.
 
 ## Testing
 
-Run all project tests with a coverage report:
 ```bash
-go test -v -cover ./...
+go test ./...
+go test ./sim -run TestSim$ -timeout 60m -args -sim.steps=10000000 -sim.seeds=8
+go test ./cmd/node -run TestKillCycles -timeout 60m -args -kill.cycles=200
+go test ./node -run TestRoundTime -args -round.n=2000
 ```
 
 ## Docker
 
-Build the image:
 ```bash
 docker build -t raft-node .
-```
-
-Run a container:
-```bash
-docker run -p 8001:8001 raft-node --id 1 --env production
+docker run -p 8001:8001 -p 9001:9001 raft-node --id 1 --env production
 ```
 
 ## Raftfile Example
 
-Example of a `Raftfile` configuration:
 ```ini
 [local]
 1 127.0.0.1:8001
 2 127.0.0.1:8002
 3 127.0.0.1:8003
-4 127.0.0.1:8004
-5 127.0.0.1:8005
 
 [production]
 1 raft-1.internal:8001
