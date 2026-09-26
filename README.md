@@ -60,13 +60,16 @@ leadership was lost first, and `node.ErrClosed` after `Close`.
 
 ## Demo
 
-A key-value node over HTTP, configured by the `Raftfile`:
+A key-value node over HTTP. Run a three-node cluster in one process:
 
 ```bash
-go run ./cmd/node --all --env local
+go run ./cmd/node --all --peers 1=127.0.0.1:8001,2=127.0.0.1:8002,3=127.0.0.1:8003
 curl -X PUT http://localhost:9001/kv/greeting -d 'hello'
 curl http://localhost:9001/kv/greeting
 ```
+
+Or one node per process: the same `--peers` everywhere and `--id 1`, `--id 2`, `--id 3`. The HTTP API listens on the
+Raft port plus 1000.
 
 ## Testing
 

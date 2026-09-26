@@ -1,9 +1,0 @@
-[local]
-1 127.0.0.1:8001
-2 127.0.0.1:8002
-3 127.0.0.1:8003
-
-[production]
-1 raft-1.internal:8001
-2 raft-2.internal:8001
-3 raft-3.internal:8001

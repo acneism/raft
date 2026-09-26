@@ -37,7 +37,7 @@ type proc struct {
 type harness struct {
 	t     *testing.T
 	bin   string
-	rf    string
+	peers string
 	dir   string
 	procs []*proc
 	mu    sync.Mutex
@@ -79,7 +79,7 @@ func buildBinary(t *testing.T) string {
 
 func (h *harness) start(p *proc) {
 	h.t.Helper()
-	args := []string{"--id", fmt.Sprint(p.id), "--raftfile", h.rf, "--env", "test", "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
+	args := []string{"--id", fmt.Sprint(p.id), "--peers", h.peers, "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
 	if *killNoSync {
 		args = append(args, "--unsafe-no-fsync")
 	}
@@ -126,10 +126,9 @@ func TestKillCycles(t *testing.T) {
 	}
 	h := &harness{t: t, bin: bin, dir: t.TempDir(), hc: &http.Client{Timeout: 3 * time.Second}}
 	addrs := freePorts(t, 6)
-	var rf strings.Builder
-	rf.WriteString("[test]\n")
+	var peers []string
 	for i := range 3 {
-		fmt.Fprintf(&rf, "%d %s\n", i+1, addrs[i])
+		peers = append(peers, fmt.Sprintf("%d=%s", i+1, addrs[i]))
 		out, err := os.Create(filepath.Join(h.dir, fmt.Sprintf("node%d.log", i+1)))
 		if err != nil {
 			t.Fatal(err)
@@ -137,10 +136,7 @@ func TestKillCycles(t *testing.T) {
 		defer out.Close()
 		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], out: out})
 	}
-	h.rf = filepath.Join(h.dir, "Raftfile")
-	if err := os.WriteFile(h.rf, []byte(rf.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	h.peers = strings.Join(peers, ",")
 	for _, p := range h.procs {
 		h.start(p)
 	}

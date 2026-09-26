@@ -8,17 +8,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/acneism/raft"
-	"github.com/acneism/raft/internal/config"
+
 	"github.com/acneism/raft/internal/kvfsm"
 	"github.com/acneism/raft/node"
 )
@@ -32,10 +35,9 @@ type options struct {
 }
 
 func main() {
-	nodeID := flag.Int("id", 0, "node ID from the Raftfile")
-	runAll := flag.Bool("all", false, "run every node of the environment in this process")
-	raftfile := flag.String("raftfile", "./Raftfile", "path to the Raftfile")
-	env := flag.String("env", "local", "environment to load from the Raftfile")
+	nodeID := flag.String("id", "", "ID of this node, one of --peers")
+	runAll := flag.Bool("all", false, "run every node of --peers in this process")
+	peerList := flag.String("peers", "", "all nodes including this one: id=host:port,id=host:port")
 	var o options
 	flag.StringVar(&o.dir, "dir", "data", "data directory")
 	flag.StringVar(&o.httpAddr, "http", "", "HTTP API address of a single node (default: Raft port + http-offset)")
@@ -44,35 +46,33 @@ func main() {
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
 	flag.Parse()
 
-	if !*runAll && *nodeID <= 0 {
-		fail("specify --id <positive integer> or --all")
-	}
-	cfg, err := config.ParseRaftfile(*raftfile)
+	peers, err := parsePeers(*peerList)
 	if err != nil {
-		fail("parse Raftfile", "path", *raftfile, "err", err)
+		fail("parse --peers", "err", err)
 	}
-	members, err := cfg.GetEnv(*env)
-	if err != nil {
-		fail("environment not found in Raftfile", "env", *env, "err", err)
+	var ids []raft.NodeID
+	switch {
+	case *runAll:
+		ids = slices.Sorted(maps.Keys(peers))
+	case *nodeID == "":
+		fail("specify --id or --all")
+	default:
+		if _, ok := peers[raft.NodeID(*nodeID)]; !ok {
+			fail("--id is not in --peers", "id", *nodeID)
+		}
+		ids = []raft.NodeID{raft.NodeID(*nodeID)}
 	}
-	peers := map[raft.NodeID]string{}
-	for _, p := range members {
-		peers[raft.NodeID(strconv.Itoa(p.ID))] = p.Address
+	if len(ids) > 1 && o.httpAddr != "" {
+		fail("--http needs a single node; use --http-offset with --all")
 	}
 
 	var servers []*server
-	for _, p := range members {
-		if !*runAll && p.ID != *nodeID {
-			continue
-		}
-		s, err := start(raft.NodeID(strconv.Itoa(p.ID)), peers, o)
+	for _, id := range ids {
+		s, err := start(id, peers, o)
 		if err != nil {
-			fail("start node", "id", p.ID, "err", err)
+			fail("start node", "id", id, "err", err)
 		}
 		servers = append(servers, s)
-	}
-	if len(servers) == 0 {
-		fail("node ID not found in Raftfile", "id", *nodeID, "env", *env)
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -86,6 +86,24 @@ func main() {
 func fail(msg string, args ...any) {
 	slog.Error(msg, args...)
 	os.Exit(1)
+}
+
+func parsePeers(s string) (map[raft.NodeID]string, error) {
+	peers := map[raft.NodeID]string{}
+	for part := range strings.SplitSeq(s, ",") {
+		id, addr, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || id == "" || addr == "" {
+			return nil, fmt.Errorf("bad peer %q, want id=host:port", part)
+		}
+		if _, dup := peers[raft.NodeID(id)]; dup {
+			return nil, fmt.Errorf("duplicate peer id %q", id)
+		}
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return nil, fmt.Errorf("peer %q: %w", id, err)
+		}
+		peers[raft.NodeID(id)] = addr
+	}
+	return peers, nil
 }
 
 type server struct {

@@ -16,9 +16,7 @@ WORKDIR /app
 
 COPY --from=builder /app/raft-node /app/raft-node
 
-COPY Raftfile /app/Raftfile
-
-EXPOSE 8001 8002 8003 9001 9002 9003
+EXPOSE 8001 9001
 
 ENTRYPOINT ["/app/raft-node"]
-CMD ["--id", "1", "--env", "production"]
+CMD ["--id", "1", "--peers", "1=raft-1.internal:8001,2=raft-2.internal:8001,3=raft-3.internal:8001"]
