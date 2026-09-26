@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gliedabrennung/raft"
@@ -25,28 +27,29 @@ type SnapshotFile struct {
 }
 
 func Manifest(dir string) ([]SnapshotFile, error) {
-	des, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
 	var out []SnapshotFile
-	for _, de := range des {
-		if !de.Type().IsRegular() {
-			continue
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
 		}
-		f, err := os.Open(filepath.Join(dir, de.Name()))
+		rel, err := filepath.Rel(dir, path)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
 		}
 		h := crc32.New(castagnoli)
 		n, err := io.Copy(h, f)
 		f.Close()
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, SnapshotFile{Name: de.Name(), Size: n, CRC: h.Sum32()})
-	}
-	return out, nil
+		out = append(out, SnapshotFile{Name: filepath.ToSlash(rel), Size: n, CRC: h.Sum32()})
+		return nil
+	})
+	return out, err
 }
 
 func fileCRC(path string) (uint32, error) {
@@ -63,7 +66,8 @@ func fileCRC(path string) (uint32, error) {
 }
 
 func validName(name string) bool {
-	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && filepath.IsLocal(name)
+	return name != "" && name != "." && !strings.ContainsAny(name, `\:`) && filepath.IsLocal(filepath.FromSlash(name)) &&
+		filepath.ToSlash(filepath.Clean(filepath.FromSlash(name))) == name
 }
 
 func IncomingDir(root string, s raft.SnapshotMeta) string {
@@ -160,7 +164,7 @@ func (t *Transport) sendSnapshot(m raft.Message, dir string) error {
 		if off == f.Size {
 			continue
 		}
-		fh, err := os.Open(filepath.Join(dir, f.Name))
+		fh, err := os.Open(filepath.Join(dir, filepath.FromSlash(f.Name)))
 		if err != nil {
 			return err
 		}
@@ -246,15 +250,20 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	des, err := os.ReadDir(dir)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err == nil && !slices.Contains(names, filepath.ToSlash(rel)) {
+			err = os.Remove(path)
+		}
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	for _, de := range des {
-		if !slices.Contains(names, de.Name()) {
-			os.RemoveAll(filepath.Join(dir, de.Name()))
-		}
-	}
+	dirs := []string{dir}
 	fhs := make([]*os.File, len(files))
 	defer func() {
 		for _, fh := range fhs {
@@ -266,7 +275,14 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 	next := make([]int64, len(files))
 	var have []byte
 	for i, f := range files {
-		fh, err := os.OpenFile(filepath.Join(dir, f.Name), os.O_RDWR|os.O_CREATE, 0o644)
+		path := filepath.Join(dir, filepath.FromSlash(f.Name))
+		if parent := filepath.Dir(path); !slices.Contains(dirs, parent) {
+			if err := os.MkdirAll(parent, 0o755); err != nil {
+				return "", err
+			}
+			dirs = append(dirs, parent)
+		}
+		fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 		if err != nil {
 			return "", err
 		}
@@ -321,7 +337,7 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 		if err := fhs[i].Sync(); err != nil {
 			return "", err
 		}
-		crc, err := fileCRC(filepath.Join(dir, f.Name))
+		crc, err := fileCRC(filepath.Join(dir, filepath.FromSlash(f.Name)))
 		if err != nil {
 			return "", err
 		}
@@ -330,5 +346,10 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 			return "", fmt.Errorf("transport: %s checksum mismatch", f.Name)
 		}
 	}
-	return dir, fsx.SyncDir(dir)
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := fsx.SyncDir(dirs[i]); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }

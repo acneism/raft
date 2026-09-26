@@ -53,6 +53,7 @@ type Log struct {
 	cacheBytes int64
 	buf        []byte
 	closed     bool
+	fileMu     sync.Mutex
 }
 
 func Open(dir string, bootstrap raft.ConfState, opts Options) (*Log, error) {
@@ -186,7 +187,7 @@ func (l *Log) recover() error {
 	}
 	if len(l.segs) > 0 && last < l.meta.compactIndex {
 		for _, s := range l.segs {
-			if err := s.remove(); err != nil {
+			if err := l.removeSegment(s); err != nil {
 				return err
 			}
 		}
@@ -211,7 +212,7 @@ func (l *Log) dropCompactedSegments() error {
 		return nil
 	}
 	for _, s := range l.segs[:n] {
-		if err := s.remove(); err != nil {
+		if err := l.removeSegment(s); err != nil {
 			return err
 		}
 	}
@@ -333,6 +334,7 @@ func (l *Log) Append(ents []raft.Entry) error {
 			return err
 		}
 		seg.dirty = true
+		seg.writes++
 		next, err := createSegment(l.dir, l.meta.epoch, first, seg.crc, max(l.opts.SegmentSize, headerSize+size))
 		if err != nil {
 			return err
@@ -362,6 +364,7 @@ func (l *Log) Append(ents []raft.Entry) error {
 	seg.end += int64(len(buf))
 	seg.crc = crc
 	seg.dirty = true
+	seg.writes++
 	l.cacheAppend(ents)
 	return nil
 }
@@ -372,7 +375,7 @@ func (l *Log) truncate(first uint64) error {
 	k := slices.Index(l.segs, loc.seg)
 	if k+1 < len(l.segs) {
 		for _, s := range l.segs[k+1:] {
-			if err := s.remove(); err != nil {
+			if err := l.removeSegment(s); err != nil {
 				return err
 			}
 		}
@@ -392,14 +395,17 @@ func (l *Log) cacheAppend(ents []raft.Entry) {
 	for i := range ents {
 		l.cacheBytes += 24 + int64(len(ents[i].Data))
 	}
+	if l.cacheBytes <= l.opts.CacheBytes {
+		return
+	}
 	drop := 0
-	for l.cacheBytes > l.opts.CacheBytes && drop < len(l.cache) {
+	for l.cacheBytes > l.opts.CacheBytes*3/4 && drop < len(l.cache) {
 		l.cacheBytes -= 24 + int64(len(l.cache[drop].Data))
 		drop++
 	}
-	if drop > 0 {
-		l.cache = append([]raft.Entry(nil), l.cache[drop:]...)
-	}
+	n := copy(l.cache, l.cache[drop:])
+	clear(l.cache[n:])
+	l.cache = l.cache[:n]
 }
 
 func (l *Log) cacheTruncate(first uint64) {
@@ -438,20 +444,38 @@ func (l *Log) SetHardState(hs raft.HardState) error {
 
 func (l *Log) Sync() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return ErrClosed
 	}
+	var segs []*segment
+	var writes []uint64
 	for _, s := range l.segs {
-		if !s.dirty {
-			continue
+		if s.dirty {
+			segs = append(segs, s)
+			writes = append(writes, s.writes)
 		}
-		if !l.opts.NoSync {
+	}
+	l.mu.Unlock()
+	if !l.opts.NoSync {
+		l.fileMu.Lock()
+		for _, s := range segs {
+			if s.removed {
+				continue
+			}
 			if err := fsx.Datasync(s.f); err != nil {
+				l.fileMu.Unlock()
 				return err
 			}
 		}
-		s.dirty = false
+		l.fileMu.Unlock()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i, s := range segs {
+		if s.writes == writes[i] {
+			s.dirty = false
+		}
 	}
 	if l.hsDirty {
 		if err := l.hsF.sync(); err != nil {
@@ -460,6 +484,13 @@ func (l *Log) Sync() error {
 		l.hsDirty = false
 	}
 	return nil
+}
+
+func (l *Log) removeSegment(s *segment) error {
+	l.fileMu.Lock()
+	defer l.fileMu.Unlock()
+	s.removed = true
+	return s.remove()
 }
 
 func (l *Log) writeMeta(m meta) error {
@@ -495,7 +526,7 @@ func (l *Log) ApplySnapshot(s raft.SnapshotMeta) error {
 		return err
 	}
 	for _, seg := range l.segs {
-		if err := seg.remove(); err != nil {
+		if err := l.removeSegment(seg); err != nil {
 			return err
 		}
 	}
@@ -550,7 +581,9 @@ func (l *Log) Compact(i uint64) error {
 	if err := l.writeMeta(m); err != nil {
 		return err
 	}
-	l.locs = append([]location(nil), l.locs[drop:]...)
+	n := copy(l.locs, l.locs[drop:])
+	clear(l.locs[n:])
+	l.locs = l.locs[:n]
 	if n := len(l.cache); n > 0 && l.cache[0].Index <= i {
 		k := min(uint64(n), i+1-l.cache[0].Index)
 		for _, e := range l.cache[:k] {
@@ -568,6 +601,8 @@ func (l *Log) Close() error {
 		return nil
 	}
 	l.closed = true
+	l.fileMu.Lock()
+	defer l.fileMu.Unlock()
 	var errs []error
 	if l.hsF != nil {
 		errs = append(errs, l.syncAll())

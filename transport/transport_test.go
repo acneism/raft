@@ -298,7 +298,14 @@ func writeSnapshotFiles(t *testing.T, sizes ...int) string {
 		for j := range b {
 			b[j] = byte(rng.Uint32())
 		}
-		if err := os.WriteFile(filepath.Join(dir, "file"+string(rune('a'+i))), b, 0o644); err != nil {
+		name := filepath.Join(dir, "file"+string(rune('a'+i)))
+		if i%2 == 1 {
+			name = filepath.Join(dir, "sub", "deeper", "file"+string(rune('a'+i)))
+			if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(name, b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -357,4 +364,17 @@ func TestSnapshotResumesFromReceivedBytes(t *testing.T) {
 	}
 	rb.wait(t, func() bool { return len(rb.snaps) == 1 })
 	sameDirs(t, src, rb.snaps[0])
+}
+
+func TestSnapshotFileNames(t *testing.T) {
+	for _, name := range []string{"data", "log-000/000000001.data", "a/b/c"} {
+		if !validName(name) {
+			t.Errorf("rejected %q", name)
+		}
+	}
+	for _, name := range []string{"", ".", "..", "../x", "a/../../x", "/abs", "a//b", "a/./b", `a\b`, "C:x", "a/"} {
+		if validName(name) {
+			t.Errorf("accepted %q", name)
+		}
+	}
 }

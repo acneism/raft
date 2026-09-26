@@ -21,14 +21,16 @@ const (
 )
 
 type segment struct {
-	f     *os.File
-	path  string
-	epoch uint64
-	first uint64
-	seed  uint32
-	end   int64
-	crc   uint32
-	dirty bool
+	f       *os.File
+	path    string
+	epoch   uint64
+	first   uint64
+	seed    uint32
+	end     int64
+	crc     uint32
+	dirty   bool
+	writes  uint64
+	removed bool
 }
 
 func segName(epoch, first uint64) string { return fmt.Sprintf("%016x-%016x.seg", epoch, first) }

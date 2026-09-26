@@ -251,6 +251,7 @@ type peer struct {
 	bytes  int64
 	hb     int
 	hbResp int
+	spare  []raft.Message
 	notify chan struct{}
 }
 
@@ -296,8 +297,18 @@ func (p *peer) take() []raft.Message {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	q := p.queue
-	p.queue, p.bytes, p.hb, p.hbResp = nil, 0, -1, -1
+	p.queue, p.spare = p.spare[:0], nil
+	p.bytes, p.hb, p.hbResp = 0, -1, -1
 	return q
+}
+
+func (p *peer) recycle(q []raft.Message) {
+	clear(q)
+	p.mu.Lock()
+	if p.spare == nil {
+		p.spare = q[:0]
+	}
+	p.mu.Unlock()
 }
 
 func (p *peer) drop(q []raft.Message) {
@@ -360,6 +371,7 @@ func (p *peer) stream(c net.Conn, w *bufio.Writer) error {
 			p.drop(q)
 			return fmt.Errorf("transport: send to %s: %w", p.id, err)
 		}
+		p.recycle(q)
 	}
 }
 
