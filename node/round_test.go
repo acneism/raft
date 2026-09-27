@@ -112,6 +112,7 @@ func measureRounds(t *testing.T, mode roundMode, writers, n int) (dist, float64)
 		cfg.NoSync = mode.noSync
 		cfg.CompactEntries = 1 << 30
 		cfg.TickInterval = 50 * time.Millisecond
+		cfg.SegmentSize = 16 << 20
 	})
 	l := c.leader(5 * time.Second)
 	c.write("warmup", "x")
