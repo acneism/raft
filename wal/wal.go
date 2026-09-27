@@ -63,7 +63,7 @@ func Open(dir string, bootstrap raft.ConfState, opts Options) (*Log, error) {
 	if opts.CacheBytes <= 0 {
 		opts.CacheBytes = 8 << 20
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	l := &Log{dir: dir, opts: opts}

@@ -45,7 +45,7 @@ func parseSegName(name string) (epoch, first uint64, ok bool) {
 
 func createSegment(dir string, epoch, first uint64, seed uint32, size int64) (*segment, error) {
 	path := filepath.Join(dir, segName(epoch, first))
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func createSegment(dir string, epoch, first uint64, seed uint32, size int64) (*s
 }
 
 func openSegment(path string) (*segment, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

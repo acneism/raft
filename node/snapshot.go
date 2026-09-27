@@ -137,7 +137,7 @@ func (n *Node) maybeSnapshot() error {
 	n.wmu.Unlock()
 	tmp := filepath.Join(n.snapRoot, "tmp")
 	os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		return err
 	}
 	meta, err := n.fsm.Snapshot(tmp)

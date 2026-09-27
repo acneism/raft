@@ -41,12 +41,12 @@ type FSM struct {
 }
 
 func Open(dir string, syncEvery int) (*FSM, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	s := &FSM{dir: dir, data: map[string]string{}, syncEvery: max(1, syncEvery)}
 	path := filepath.Join(dir, "fsm.log")
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ func decodeState(p []byte) (uint64, map[string]string, error) {
 }
 
 func writeFileSync(path string, b []byte) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (s *FSM) Restore(src node.SnapshotSource) error {
 	if err := fsx.SyncDir(s.dir); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}

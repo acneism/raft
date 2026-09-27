@@ -25,7 +25,7 @@ type slotFile struct {
 }
 
 func openSlotFile(path string, size int) (*slotFile, []byte, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, nil, err
 	}

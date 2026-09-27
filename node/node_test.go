@@ -414,6 +414,10 @@ func TestSnapshotCatchUp(t *testing.T) {
 	}
 	c.write("after", "1")
 	c.converged(5 * time.Second)
+	for _, m := range c.members {
+		checkPrivate(t, filepath.Join(m.dir, "raft"))
+		checkPrivate(t, filepath.Join(m.dir, "fsm"))
+	}
 }
 
 func TestRestartReplaysAfterDurableIndex(t *testing.T) {

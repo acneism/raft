@@ -169,7 +169,7 @@ func Open(cfg Config) (*Node, error) {
 	n.pq.init()
 	n.aq.init()
 	n.events.notify = make(chan struct{}, 1)
-	if err := os.MkdirAll(n.snapRoot, 0o755); err != nil {
+	if err := os.MkdirAll(n.snapRoot, 0o700); err != nil {
 		return nil, err
 	}
 	log, err := wal.Open(filepath.Join(cfg.Dir, "wal"), conf, wal.Options{SegmentSize: cfg.SegmentSize, NoSync: cfg.NoSync})

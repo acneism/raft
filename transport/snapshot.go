@@ -235,7 +235,7 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 		names[i] = f.Name
 	}
 	dir := IncomingDir(t.cfg.SnapshotDir, s)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -265,12 +265,12 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 	for i, f := range files {
 		path := filepath.Join(dir, filepath.FromSlash(f.Name))
 		if parent := filepath.Dir(path); !slices.Contains(dirs, parent) {
-			if err := os.MkdirAll(parent, 0o755); err != nil {
+			if err := os.MkdirAll(parent, 0o700); err != nil {
 				return "", err
 			}
 			dirs = append(dirs, parent)
 		}
-		fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+		fh, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 		if err != nil {
 			return "", err
 		}
