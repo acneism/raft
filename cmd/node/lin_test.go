@@ -174,7 +174,7 @@ func TestLinearizability(t *testing.T) {
 	checkStart := time.Now()
 	res, info := porcupine.CheckOperationsVerbose(kvModel, history, 5*time.Minute)
 
-	t.Logf("%d operations completed, %d with unknown outcome; checked in %v: %s", acked.Load(), unknown.Load(), time.Since(checkStart).Round(time.Millisecond), res)
+	t.Logf("%d operations completed, %d with unknown outcome, %d of %d leadership transfers done; checked in %v: %s", acked.Load(), unknown.Load(), h.transferred, h.transfers, time.Since(checkStart).Round(time.Millisecond), res)
 	if res != porcupine.Ok {
 		path := *linOut
 		if path == "" {

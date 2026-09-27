@@ -35,13 +35,14 @@ type proc struct {
 }
 
 type harness struct {
-	t     *testing.T
-	bin   string
-	peers string
-	dir   string
-	procs []*proc
-	mu    sync.Mutex
-	hc    *http.Client
+	t                      *testing.T
+	bin                    string
+	peers                  string
+	dir                    string
+	procs                  []*proc
+	mu                     sync.Mutex
+	hc                     *http.Client
+	transfers, transferred int
 }
 
 func freePorts(t *testing.T, n int) []string {
@@ -147,9 +148,38 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+func (h *harness) transfer() {
+	for _, p := range h.procs {
+		var st struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		}
+		if p.cmd == nil || h.getJSON(p.http, "/status", &st) != nil || st.State != "Leader" {
+			continue
+		}
+		to := fmt.Sprint(h.procs[rand.IntN(len(h.procs))].id)
+		if to == st.ID {
+			return
+		}
+		h.transfers++
+		if resp, err := h.hc.Post("http://"+p.http+"/transfer/"+to, "", nil); err == nil {
+			if resp.StatusCode == http.StatusNoContent {
+				h.transferred++
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		return
+	}
+}
+
 func (h *harness) nemesis(until time.Time) {
 	for time.Now().Before(until) {
 		time.Sleep(time.Duration(300+rand.IntN(1200)) * time.Millisecond)
+		if rand.IntN(2) == 0 {
+			h.transfer()
+			continue
+		}
 		victim := h.procs[rand.IntN(len(h.procs))]
 		h.kill(victim)
 		time.Sleep(time.Duration(100+rand.IntN(700)) * time.Millisecond)

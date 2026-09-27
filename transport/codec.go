@@ -51,6 +51,9 @@ func AppendMessage(b []byte, m *raft.Message) []byte {
 	if m.Snapshot != nil {
 		flags |= 2
 	}
+	if m.Transfer {
+		flags |= 4
+	}
 	b = append(b, flags)
 	b = appendUvarint(b, m.RejectHint)
 	b = appendUvarint(b, uint64(len(m.Entries)))
@@ -147,6 +150,7 @@ func (d *decoder) message() raft.Message {
 	m.Commit = d.uvarint()
 	flags := d.byte()
 	m.Reject = flags&1 != 0
+	m.Transfer = flags&4 != 0
 	m.RejectHint = d.uvarint()
 	if n := d.count(4); n > 0 {
 		m.Entries = make([]raft.Entry, n)
@@ -164,7 +168,7 @@ func (d *decoder) message() raft.Message {
 		s := d.snapshotMeta()
 		m.Snapshot = &s
 	}
-	if m.Type == 0 || m.Type > raft.MsgTimeoutNow || flags > 3 {
+	if m.Type == 0 || m.Type > raft.MsgTimeoutNow || flags > 7 {
 		d.fail()
 	}
 	return m

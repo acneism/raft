@@ -128,6 +128,12 @@ func (n *Node) step(m raft.Message) {
 func (n *Node) observe() {
 	st := n.core.Status()
 	e := Event{Term: st.Term, Leader: st.Lead, Ready: st.LeaderReady}
+	if e == n.obs && st.LeadTransferee == n.transferee {
+		return
+	}
+	n.transferee = st.LeadTransferee
+	close(n.changed)
+	n.changed = make(chan struct{})
 	if e == n.obs {
 		return
 	}

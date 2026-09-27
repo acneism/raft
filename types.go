@@ -138,6 +138,7 @@ type Message struct {
 	Snapshot   *SnapshotMeta
 	Reject     bool
 	RejectHint uint64
+	Transfer   bool
 }
 
 type Ready struct {

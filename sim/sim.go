@@ -727,7 +727,7 @@ func (s *Sim) lost(env *envelope) {
 
 func (s *Sim) fault() {
 	n := s.nodes[s.rng.IntN(len(s.nodes))]
-	switch s.rng.IntN(13) {
+	switch s.rng.IntN(14) {
 	case 0, 1:
 		if n.up {
 			s.crash(n, true)
@@ -776,6 +776,11 @@ func (s *Sim) fault() {
 		n.skew = 0.5 + 1.5*s.rng.Float64()
 	case 12:
 		n.slowDisk = !n.slowDisk
+	case 13:
+		if to := s.nodes[s.rng.IntN(len(s.nodes))]; n.up && n.core.Status().State == raft.StateLeader && to != n {
+			n.core.TransferLeadership(to.id)
+			s.process(n)
+		}
 	}
 }
 

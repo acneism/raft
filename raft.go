@@ -64,6 +64,10 @@ type Core struct {
 	sendPending bool
 	yield       bool
 
+	leadTransferee  NodeID
+	transferElapsed int
+	transferVote    bool
+
 	msgs             []Message
 	msgsAfterPersist []Message
 
@@ -141,19 +145,21 @@ type Status struct {
 	ID NodeID
 	HardState
 	SoftState
-	Applied     uint64
-	LastIndex   uint64
-	LeaderReady bool
+	Applied        uint64
+	LastIndex      uint64
+	LeaderReady    bool
+	LeadTransferee NodeID
 }
 
 func (c *Core) Status() Status {
 	return Status{
-		ID:          c.id,
-		HardState:   HardState{Term: c.term, Vote: c.vote, Commit: c.log.committed},
-		SoftState:   c.softState(),
-		Applied:     c.log.applied,
-		LastIndex:   c.log.lastIndex(),
-		LeaderReady: c.leaderReady(),
+		ID:             c.id,
+		HardState:      HardState{Term: c.term, Vote: c.vote, Commit: c.log.committed},
+		SoftState:      c.softState(),
+		Applied:        c.log.applied,
+		LastIndex:      c.log.lastIndex(),
+		LeaderReady:    c.leaderReady(),
+		LeadTransferee: c.leadTransferee,
 	}
 }
 
@@ -162,7 +168,7 @@ func (c *Core) leaderReady() bool {
 }
 
 func (c *Core) Propose(data []byte) (index, term uint64, err error) {
-	if !c.leaderReady() || !c.trk.isVoter(c.id) {
+	if !c.leaderReady() || !c.trk.isVoter(c.id) || c.leadTransferee != None {
 		return 0, 0, ErrNotLeader
 	}
 	index = c.appendEntry(Entry{Type: EntryNormal, Data: data})
@@ -204,6 +210,11 @@ func (c *Core) tickElection() {
 func (c *Core) tickHeartbeat() {
 	c.heartbeatElapsed++
 	c.electionElapsed++
+	if c.leadTransferee != None {
+		if c.transferElapsed++; c.transferElapsed >= c.electionTimeout {
+			c.leadTransferee = None
+		}
+	}
 	if c.electionElapsed >= c.electionTimeout {
 		c.electionElapsed = 0
 		if c.checkQuorum {
@@ -245,6 +256,7 @@ func (c *Core) reset(term uint64) {
 	c.trk.resetVotes()
 	c.noopIndex = 0
 	c.sendPending = false
+	c.leadTransferee, c.transferElapsed, c.transferVote = None, 0, false
 	last := c.log.lastIndex()
 	for _, id := range c.trk.ids {
 		pr := c.trk.progress[id]
@@ -313,7 +325,7 @@ func (c *Core) requestVotes(pre bool) {
 	last, lastTerm := c.log.lastIndex(), c.log.lastTerm()
 	for _, id := range c.trk.voters {
 		if _, voted := c.trk.votes[id]; !voted && id != c.id {
-			c.send(Message{To: id, Type: voteType, Term: term, Index: last, LogTerm: lastTerm})
+			c.send(Message{To: id, Type: voteType, Term: term, Index: last, LogTerm: lastTerm, Transfer: c.transferVote && !pre})
 		}
 	}
 }
@@ -323,7 +335,7 @@ func (c *Core) send(m Message) {
 	if m.Term == 0 {
 		m.Term = c.term
 	}
-	early := m.Type == MsgHeartbeatResp || m.Type == MsgReadIndex || m.Type == MsgReadIndexResp ||
+	early := m.Type == MsgHeartbeatResp || m.Type == MsgReadIndex || m.Type == MsgReadIndexResp || m.Type == MsgTimeoutNow ||
 		c.state == StateLeader && c.durableTerm == c.term &&
 			(m.Type == MsgApp || m.Type == MsgHeartbeat || m.Type == MsgSnap)
 	if early {
@@ -337,7 +349,7 @@ func (c *Core) Step(m Message) error {
 	switch {
 	case m.Term > c.term:
 		if m.Type == MsgVote || m.Type == MsgPreVote {
-			if c.checkQuorum && c.lead != None && c.electionElapsed < c.electionTimeout {
+			if c.checkQuorum && c.lead != None && c.electionElapsed < c.electionTimeout && !m.Transfer {
 				return nil
 			}
 		}
@@ -411,6 +423,10 @@ func (c *Core) stepFollower(m Message) {
 		c.electionElapsed = 0
 		c.lead = m.From
 		c.handleSnapshot(m)
+	case MsgTimeoutNow:
+		if c.promotable() {
+			c.campaignTransfer()
+		}
 	case MsgReadIndex:
 		c.send(Message{To: m.From, Type: MsgReadIndexResp, Index: m.Index, Reject: true})
 	case MsgReadIndexResp:
@@ -483,6 +499,9 @@ func (c *Core) stepLeader(m Message) {
 				pr.inflights.freeLE(m.Index)
 			}
 			c.maybeCommit()
+		}
+		if m.From == c.leadTransferee && pr.Match == c.log.lastIndex() {
+			c.send(Message{To: m.From, Type: MsgTimeoutNow})
 		}
 	case MsgHeartbeatResp:
 		pr.RecentActive = true

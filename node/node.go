@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	ErrNotLeader = raft.ErrNotLeader
-	ErrLost      = errors.New("node: proposal lost")
-	ErrUnknown   = errors.New("node: proposal outcome unknown")
-	ErrClosed    = errors.New("node: closed")
+	ErrNotLeader      = raft.ErrNotLeader
+	ErrLost           = errors.New("node: proposal lost")
+	ErrUnknown        = errors.New("node: proposal outcome unknown")
+	ErrClosed         = errors.New("node: closed")
+	ErrTransferFailed = errors.New("node: leadership transfer failed")
 )
 
 type Proposal struct {
@@ -79,10 +80,12 @@ type Node struct {
 	snapRoot string
 	logger   *slog.Logger
 
-	mu    sync.Mutex
-	core  *raft.Core
-	obs   Event
-	reads map[uint64][]chan readResult
+	mu         sync.Mutex
+	core       *raft.Core
+	obs        Event
+	reads      map[uint64][]chan readResult
+	changed    chan struct{}
+	transferee raft.NodeID
 
 	recvc      chan raft.Message
 	notifyc    chan struct{}
@@ -165,6 +168,7 @@ func Open(cfg Config) (*Node, error) {
 		appliedCh:  make(chan struct{}),
 		eventOut:   make(chan Event, 64),
 		reads:      map[uint64][]chan readResult{},
+		changed:    make(chan struct{}),
 	}
 	n.pq.init()
 	n.aq.init()

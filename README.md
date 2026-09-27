@@ -22,6 +22,8 @@ go get github.com/acneism/raft
   snapshot is taken only when a follower falls behind the compacted log.
 - **Linearizable reads.** `ReadIndex` confirms leadership with one heartbeat round instead of a log write, batches
   concurrent reads and works on followers.
+- **Leadership transfer.** `TransferLeadership` brings the target up to date and hands leadership over without waiting
+  for an election timeout.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety
   invariants after every step and the client history for linearizability with
   [Porcupine](https://github.com/anishathalye/porcupine).

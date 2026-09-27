@@ -161,6 +161,7 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 	mux.HandleFunc("GET /kv/{key}", s.get)
 	mux.HandleFunc("PUT /kv/{key}", s.put)
 	mux.HandleFunc("POST /kv/{key}/append", s.append)
+	mux.HandleFunc("POST /transfer/{id}", s.transfer)
 	s.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -263,3 +264,21 @@ func (s *server) write(w http.ResponseWriter, r *http.Request, cmd func(key, val
 func (s *server) put(w http.ResponseWriter, r *http.Request) { s.write(w, r, kvfsm.Put) }
 
 func (s *server) append(w http.ResponseWriter, r *http.Request) { s.write(w, r, kvfsm.Append) }
+
+func (s *server) transfer(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	switch err := s.n.TransferLeadership(ctx, raft.NodeID(r.PathValue("id"))); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, node.ErrNotLeader):
+		w.Header().Set("X-Raft-Leader", string(s.n.Status().Lead))
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	case errors.Is(err, raft.ErrTransferTarget):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, node.ErrTransferFailed):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusGatewayTimeout)
+	}
+}
