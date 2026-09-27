@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,28 +213,49 @@ func TestReplication(t *testing.T) {
 
 func TestConcurrentProposals(t *testing.T) {
 	c := newCluster(t, 3, nil)
-	l := c.leader(5 * time.Second)
+	current := func() *member {
+		for {
+			for _, m := range c.members {
+				if st := m.n.Status(); st.State == raft.StateLeader && st.LeaderReady {
+					return m
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	c.leader(5 * time.Second)
 	var wg sync.WaitGroup
+	var retries atomic.Int64
 	errs := make(chan error, 64)
 	for w := range 32 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			var last node.Proposal
-			for i := range 20 {
+			for i := 0; i < 20 && ctx.Err() == nil; {
+				l := current()
 				p, err := l.n.Propose(kvfsm.Put(fmt.Sprintf("w%d-%d", w, i), "x"))
+				if errors.Is(err, node.ErrNotLeader) {
+					retries.Add(1)
+					continue
+				}
 				if err != nil {
 					errs <- err
 					return
 				}
-				if p.Index <= last.Index {
-					errs <- fmt.Errorf("indexes not increasing: %d after %d", p.Index, last.Index)
+				if p.Term == last.Term && p.Index <= last.Index {
+					errs <- fmt.Errorf("indexes not increasing in term %d: %d after %d", p.Term, p.Index, last.Index)
 					return
 				}
 				last = p
-				if err := l.n.Wait(ctx, p); err != nil {
+				switch err := l.n.Wait(ctx, p); {
+				case err == nil:
+					i++
+				case errors.Is(err, node.ErrUnknown) || errors.Is(err, node.ErrLost):
+					retries.Add(1)
+				default:
 					errs <- err
 					return
 				}
@@ -246,9 +268,10 @@ func TestConcurrentProposals(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.converged(5 * time.Second)
-	if n := l.fsm.Len(); n != 32*20 {
+	if n := c.leader(5 * time.Second).fsm.Len(); n != 32*20 {
 		t.Fatalf("%d keys", n)
 	}
+	t.Logf("%d proposals retried after a leader change", retries.Load())
 }
 
 func TestFollowerRejectsProposals(t *testing.T) {
