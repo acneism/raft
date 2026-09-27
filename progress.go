@@ -245,3 +245,17 @@ func (t *tracker) readConfirmed(self NodeID) uint64 {
 	slices.Sort(t.matchBuf)
 	return t.matchBuf[len(t.matchBuf)-t.quorum()]
 }
+
+func (t *tracker) update(cs ConfState, maxInflight int, maxInflightBytes uint64, last uint64) {
+	next := newTracker(cs, maxInflight, maxInflightBytes)
+	for id, pr := range next.progress {
+		if old, ok := t.progress[id]; ok {
+			old.IsLearner = pr.IsLearner
+			next.progress[id] = old
+		} else {
+			pr.Next = last + 1
+		}
+	}
+	next.votes = t.votes
+	*t = next
+}

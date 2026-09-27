@@ -28,6 +28,7 @@ type Options struct {
 	CheckQuorum bool
 	Bug         Bug
 	KV          bool
+	Members     bool
 }
 
 const kvKeys = 8
@@ -72,9 +73,11 @@ const (
 	evCompact
 	evCalmStart
 	evCalmEnd
+	evMember
+	evRetire
 )
 
-var eventNames = [...]string{"tick", "deliver", "sync", "propose", "fault", "restart", "fsm-sync", "compact", "calm-start", "calm-end"}
+var eventNames = [...]string{"tick", "deliver", "sync", "propose", "fault", "restart", "fsm-sync", "compact", "calm-start", "calm-end", "member", "retire"}
 
 type event struct {
 	at   int64
@@ -113,6 +116,7 @@ type envelope struct {
 type fsmState struct {
 	index, hash uint64
 	kv          [kvKeys]string
+	conf        raft.ConfState
 }
 
 type node struct {
@@ -121,6 +125,9 @@ type node struct {
 	gen      uint64
 	core     *raft.Core
 	disk     *raft.MemoryStorage
+	confs    []raft.ConfState
+	gone     bool
+	joined   bool
 	diskFull bool
 	slowDisk bool
 	skew     float64
@@ -171,6 +178,7 @@ type Sim struct {
 	proposals uint64
 	history   []Op
 	abandoned []pendingOp
+	confIndex uint64
 	calm      bool
 	calmFrom  uint64
 	calmOK    bool
@@ -192,24 +200,17 @@ func New(opts Options) *Sim {
 	for i := range opts.Nodes {
 		s.conf.Voters = append(s.conf.Voters, raft.NodeID(fmt.Sprintf("n%d", i+1)))
 	}
-	for i, id := range s.conf.Voters {
-		n := &node{
-			id:       id,
-			disk:     raft.NewMemoryStorage(s.conf),
-			skew:     0.8 + 0.4*s.rng.Float64(),
-			recvSnap: map[uint64]fsmState{},
-			pending:  map[uint64]pendingOp{},
-			reads:    map[uint64]*readGroup{},
-		}
-		s.nodes = append(s.nodes, n)
-		s.byID[id] = n
-		s.index[n] = i
+	for _, id := range s.conf.Voters {
+		s.addNode(id, s.conf)
 	}
 	for _, n := range s.nodes {
 		s.restart(n)
 	}
 	s.schedule(s.now+ms, evPropose, nil)
 	s.schedule(s.now+100*ms, evFault, nil)
+	if opts.Members {
+		s.schedule(s.now+s.between(200*ms, second), evMember, nil)
+	}
 	s.schedule(s.now+s.between(5*second, 10*second), evCalmStart, nil)
 	return s
 }
@@ -286,7 +287,7 @@ func (s *Sim) handle(ev *event) {
 		}
 		s.schedule(s.now+s.between(10*ms, 200*ms), evFault, nil)
 	case evRestart:
-		if !n.up && ev.gen == n.gen && !n.diskFull {
+		if !n.up && ev.gen == n.gen && !n.diskFull && !n.gone {
 			s.restart(n)
 		}
 	case evFSMSync:
@@ -302,6 +303,13 @@ func (s *Sim) handle(ev *event) {
 	case evCalmStart:
 		s.startCalm()
 		s.schedule(s.now+calmDuration, evCalmEnd, nil)
+	case evRetire:
+		if n.up {
+			s.crash(n, false)
+		}
+	case evMember:
+		s.member()
+		s.schedule(s.now+s.between(200*ms, second), evMember, nil)
 	case evCalmEnd:
 		s.endCalm()
 		s.schedule(s.now+s.between(5*second, 10*second), evCalmStart, nil)
@@ -334,6 +342,7 @@ func (s *Sim) restart(n *node) {
 		return
 	}
 	n.core = core
+	n.confs = append(n.confs[:0], core.ConfState())
 	n.up = true
 	n.view.load(n.disk)
 	n.commit = core.Status().Commit
@@ -543,6 +552,9 @@ func (s *Sim) apply(n *node, ents []raft.Entry) {
 	for _, e := range ents {
 		s.chk.apply(n, e)
 		n.fsm.index, n.fsm.hash = e.Index, mix(n.fsm.hash, e)
+		if e.Type == raft.EntryConfChange {
+			s.applyConf(n, e)
+		}
 		if e.Type != raft.EntryNormal {
 			continue
 		}
@@ -593,7 +605,7 @@ func (st storage) Snapshot() (raft.SnapshotMeta, error) {
 func (s *Sim) compact(n *node) {
 	snap, _ := n.disk.Snapshot()
 	if d := n.fsmDur; d.index > snap.Index && (n.snapWanted || s.rng.IntN(8) == 0) {
-		if _, err := n.disk.CreateSnapshot(d.index, s.conf); err != nil {
+		if _, err := n.disk.CreateSnapshot(d.index, d.conf); err != nil {
 			s.fail("%s: create snapshot: %v", n.id, err)
 			return
 		}
@@ -733,7 +745,7 @@ func (s *Sim) fault() {
 			s.crash(n, true)
 		}
 	case 2:
-		if !n.up && !n.diskFull {
+		if !n.up && !n.diskFull && !n.gone {
 			s.restart(n)
 		}
 	case 3:
@@ -768,7 +780,7 @@ func (s *Sim) fault() {
 	case 10:
 		if n.diskFull {
 			n.diskFull = false
-			if !n.up {
+			if !n.up && !n.gone {
 				s.schedule(s.now+s.between(ms, 100*ms), evRestart, n)
 			}
 		}
@@ -981,4 +993,95 @@ func (s *Sim) completeReads(n *node) {
 func (s *Sim) stamp() int64 {
 	s.seq++
 	return int64(s.seq)
+}
+
+const maxExtraNodes = 4
+
+func (s *Sim) addNode(id raft.NodeID, conf raft.ConfState) *node {
+	st := fsmState{conf: conf}
+	n := &node{
+		id:       id,
+		disk:     raft.NewMemoryStorage(conf),
+		skew:     0.8 + 0.4*s.rng.Float64(),
+		fsm:      st,
+		fsmDur:   st,
+		snap:     st,
+		joined:   len(conf.Voters) > 0,
+		recvSnap: map[uint64]fsmState{},
+		pending:  map[uint64]pendingOp{},
+		reads:    map[uint64]*readGroup{},
+	}
+	s.index[n] = len(s.nodes)
+	s.nodes = append(s.nodes, n)
+	s.byID[id] = n
+	return n
+}
+
+func (s *Sim) applyConf(n *node, e raft.Entry) {
+	cs, _, err := raft.DecodeConfState(e.Data)
+	if err != nil {
+		s.fail("%s: configuration at %d: %v", n.id, e.Index, err)
+		return
+	}
+	n.fsm.conf = cs
+	n.disk.SetConf(cs)
+	n.confs = append(n.confs, cs)
+	if e.Index <= s.confIndex {
+		return
+	}
+	s.confIndex = e.Index
+	for _, m := range s.nodes {
+		switch {
+		case cs.IsVoter(m.id) || cs.IsLearner(m.id):
+			m.joined = true
+		case m.joined && !m.gone:
+			m.gone = true
+			s.schedule(s.now, evRetire, m)
+		}
+	}
+}
+
+func (s *Sim) member() {
+	var l *node
+	for _, n := range s.nodes {
+		if n.up && n.core.Status().LeaderReady {
+			l = n
+		}
+	}
+	if l == nil {
+		return
+	}
+	cs := l.core.ConfState()
+	var cc raft.ConfChange
+	switch r := s.rng.IntN(3); {
+	case r == 0:
+		var spare *node
+		for _, n := range s.nodes {
+			if !n.joined && !n.gone && n.up && !cs.IsVoter(n.id) && !cs.IsLearner(n.id) {
+				spare = n
+			}
+		}
+		if spare == nil {
+			if len(s.nodes) >= s.opts.Nodes+maxExtraNodes {
+				return
+			}
+			spare = s.addNode(raft.NodeID(fmt.Sprintf("n%d", len(s.nodes)+1)), raft.ConfState{})
+			s.restart(spare)
+		}
+		cc = raft.ConfChange{Type: raft.ConfAddLearner, Node: spare.id, Addr: "sim"}
+	case r == 1 && len(cs.Learners) > 0:
+		cc = raft.ConfChange{Type: raft.ConfPromote, Node: cs.Learners[s.rng.IntN(len(cs.Learners))]}
+	case r == 2:
+		members := append(slices.Clone(cs.Voters), cs.Learners...)
+		id := members[s.rng.IntN(len(members))]
+		if cs.IsVoter(id) && len(cs.Voters) <= 3 {
+			return
+		}
+		cc = raft.ConfChange{Type: raft.ConfRemove, Node: id}
+	default:
+		return
+	}
+	if _, _, err := l.core.ProposeConfChange(cc); err == nil {
+		s.process(l)
+	}
 }

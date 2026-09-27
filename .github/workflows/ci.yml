@@ -55,7 +55,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: go test ./sim -run 'TestSim$' -timeout 60m -args -sim.steps=1000000 -sim.seeds=16
+      - run: go test ./sim -run 'TestSim$|TestSimMembership$' -timeout 60m -args -sim.steps=1000000 -sim.seeds=16
       - run: go test ./sim -run 'TestSimLinearizable' -timeout 60m -v -args -sim.lin.steps=1000000 -sim.seeds=16 -sim.lin.out=${{ runner.temp }}/porcupine
       - if: failure()
         uses: actions/upload-artifact@v7

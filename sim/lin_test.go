@@ -80,8 +80,8 @@ func checkLinearizable(t *testing.T, s *Sim, name string) (porcupine.CheckResult
 func TestSimLinearizable(t *testing.T) {
 	run := func(seed uint64) {
 		opts := config(seed)
-		opts.KV = true
-		name := fmt.Sprintf("seed=%d", seed)
+		opts.KV, opts.Members = true, seed%2 == 0
+		name := fmt.Sprintf("seed=%d/members=%v", seed, opts.Members)
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			s := New(opts)

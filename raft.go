@@ -64,6 +64,9 @@ type Core struct {
 	sendPending bool
 	yield       bool
 
+	conf        ConfState
+	pendingConf uint64
+
 	leadTransferee  NodeID
 	transferElapsed int
 	transferVote    bool
@@ -118,9 +121,7 @@ func New(cfg Config) (*Core, error) {
 		maxInflightBytes: cfg.MaxInflightBytes,
 		rand:             cfg.Rand,
 	}
-	if len(c.trk.voters) == 0 {
-		return nil, errors.New("raft: configuration has no voters")
-	}
+	c.conf = cs.Clone()
 	c.term, c.vote, c.durableTerm = hs.Term, hs.Vote, hs.Term
 	last := log.lastIndex()
 	if cfg.Applied > last {
@@ -651,6 +652,7 @@ func (c *Core) restore(s SnapshotMeta) bool {
 	}
 	c.log.restore(s)
 	c.trk = trk
+	c.conf = s.Conf.Clone()
 	return true
 }
 
@@ -720,6 +722,15 @@ func (c *Core) AdvancePersist(rd Ready) {
 }
 
 func (c *Core) AdvanceApply(rd Ready) {
+	for i := range rd.Committed {
+		if e := &rd.Committed[i]; e.Type == EntryConfChange {
+			cs, _, err := DecodeConfState(e.Data)
+			if err != nil {
+				panic(fmt.Sprintf("raft: configuration change at %d: %v", e.Index, err))
+			}
+			c.applyConf(cs)
+		}
+	}
 	if n := len(rd.Committed); n > 0 {
 		c.log.appliedTo(rd.Committed[n-1].Index)
 	}

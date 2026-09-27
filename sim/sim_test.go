@@ -75,3 +75,28 @@ func TestSimCatchesBugs(t *testing.T) {
 		})
 	}
 }
+
+func TestSimMembership(t *testing.T) {
+	run := func(seed uint64) {
+		opts := config(seed)
+		opts.Members = true
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			t.Parallel()
+			s := New(opts)
+			if err := s.Run(*steps); err != nil {
+				t.Fatal(err)
+			}
+			if *steps >= 1_000_000 && s.Calms() == 0 {
+				t.Fatal("no calm window completed")
+			}
+			t.Logf("%d steps, %d calm windows, %d nodes created", s.Steps(), s.Calms(), len(s.nodes))
+		})
+	}
+	if *seed != 0 {
+		run(*seed)
+		return
+	}
+	for i := range *seeds {
+		run(uint64(i + 1))
+	}
+}

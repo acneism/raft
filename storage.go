@@ -19,16 +19,23 @@ type MemoryStorage struct {
 	hs   HardState
 	snap SnapshotMeta
 	ents []Entry
+	conf ConfState
 }
 
 func NewMemoryStorage(cs ConfState) *MemoryStorage {
-	return &MemoryStorage{snap: SnapshotMeta{Conf: cs}, ents: make([]Entry, 1)}
+	return &MemoryStorage{snap: SnapshotMeta{Conf: cs}, conf: cs, ents: make([]Entry, 1)}
 }
 
 func (s *MemoryStorage) InitialState() (HardState, ConfState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.hs, s.snap.Conf, nil
+	return s.hs, s.conf, nil
+}
+
+func (s *MemoryStorage) SetConf(cs ConfState) {
+	s.mu.Lock()
+	s.conf = cs
+	s.mu.Unlock()
 }
 
 func (s *MemoryStorage) SetHardState(hs HardState) {
@@ -91,6 +98,7 @@ func (s *MemoryStorage) ApplySnapshot(snap SnapshotMeta) error {
 	}
 	s.snap = snap
 	s.ents = []Entry{{Index: snap.Index, Term: snap.Term}}
+	s.conf = snap.Conf
 	return nil
 }
 

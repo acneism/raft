@@ -64,6 +64,7 @@ func (h HardState) IsEmpty() bool { return h == HardState{} }
 type ConfState struct {
 	Voters   []NodeID
 	Learners []NodeID
+	Addrs    map[NodeID]string
 }
 
 type SnapshotMeta struct {

@@ -93,6 +93,7 @@ func (c *checker) ready(n *node, rd raft.Ready) {
 	if st.State == raft.StateLeader {
 		n.lastReady = st.Term
 	}
+	n.confs = append(n.confs[:0], n.core.ConfState())
 }
 
 func (c *checker) committed(n *node, lo, hi, term uint64) {
@@ -116,23 +117,27 @@ func (c *checker) committed(n *node, lo, hi, term uint64) {
 		c.commitObs = set(c.commitObs, i, term)
 		c.commitSeq = set(c.commitSeq, i, uint64(c.s.stamp()))
 		c.maxCommit = max(c.maxCommit, i)
-		if !c.durableOnQuorum(i, t) {
+		if !c.durableOnSomeQuorum(n, i, t) {
 			c.s.fail("%s commits (%d, %d) that is not on the disks of a quorum", n.id, i, t)
 			return
 		}
 	}
 }
 
-func (c *checker) durableOnQuorum(i, t uint64) bool {
+func (c *checker) durableOnQuorum(voters []raft.NodeID, i, t uint64) bool {
 	count := 0
-	for _, n := range c.s.nodes {
+	for _, id := range voters {
+		n := c.s.byID[id]
+		if n == nil {
+			continue
+		}
 		if snap, _ := n.disk.Snapshot(); snap.Index >= i {
 			count++
 		} else if dt, err := n.disk.Term(i); err == nil && dt == t {
 			count++
 		}
 	}
-	return count >= len(c.s.nodes)/2+1
+	return count >= len(voters)/2+1
 }
 
 func (c *checker) apply(n *node, e raft.Entry) {
@@ -224,4 +229,16 @@ func (c *checker) prune() {
 			delete(c.entries, k)
 		}
 	}
+}
+
+func (c *checker) durableOnSomeQuorum(n *node, i, t uint64) bool {
+	if c.durableOnQuorum(n.core.ConfState().Voters, i, t) {
+		return true
+	}
+	for _, cs := range n.confs {
+		if c.durableOnQuorum(cs.Voters, i, t) {
+			return true
+		}
+	}
+	return false
 }
