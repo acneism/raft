@@ -20,6 +20,8 @@ go get github.com/acneism/raft
   are never lost, and replay after a restart starts at the state machine's durable index.
 - **Snapshots on demand.** The log is compacted behind the state machine's durable index without a snapshot; a
   snapshot is taken only when a follower falls behind the compacted log.
+- **Linearizable reads.** `ReadIndex` confirms leadership with one heartbeat round instead of a log write, batches
+  concurrent reads and works on followers.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety
   invariants after every step and the client history for linearizability with
   [Porcupine](https://github.com/anishathalye/porcupine).
@@ -67,6 +69,21 @@ err = n.Wait(ctx, p)
 `Wait` returns `nil` once the entry is applied, `node.ErrLost` if another entry took its index, `node.ErrUnknown` if
 leadership was lost first, and `node.ErrClosed` after `Close`.
 
+Read linearizably on any node:
+
+```go
+index, err := n.ReadIndex(ctx)
+if err != nil {
+	return err
+}
+if err := n.WaitApplied(ctx, index); err != nil {
+	return err
+}
+value := fsm.Get(key)
+```
+
+`ReadIndex` returns `node.ErrNotLeader` when no leader could confirm the read; retrying is safe.
+
 ## Demo
 
 A key-value node over HTTP. Run a three-node cluster in one process:
@@ -79,7 +96,8 @@ curl 'http://localhost:9001/kv/greeting?consistent=1'
 ```
 
 Or one node per process: the same `--peers` everywhere and `--id 1`, `--id 2`, `--id 3`. The HTTP API listens on the
-Raft port plus 1000. A plain `GET` reads the local state machine; `?consistent=1` reads through the log.
+Raft port plus 1000. A plain `GET` reads the local state machine; `?consistent=1` confirms the read with
+`ReadIndex` first.
 
 ## Testing
 

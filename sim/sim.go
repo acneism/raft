@@ -18,6 +18,7 @@ const (
 	BugSendBeforePersist
 	BugForgetVote
 	BugEarlyAck
+	BugStaleRead
 )
 
 type Options struct {
@@ -32,13 +33,15 @@ type Options struct {
 const kvKeys = 8
 
 type Op struct {
-	Kind    byte
-	Key     int
-	Value   string
-	Output  string
-	Call    int64
-	Return  int64
-	Unknown bool
+	Kind     byte
+	Key      int
+	Value    string
+	Output   string
+	Call     int64
+	Return   int64
+	Unknown  bool
+	minIndex uint64
+	viaRead  bool
 }
 
 type pendingOp struct {
@@ -134,6 +137,7 @@ type node struct {
 	snapWanted bool
 	recvSnap   map[uint64]fsmState
 	pending    map[uint64]pendingOp
+	reads      map[uint64]*readGroup
 
 	view      logView
 	commit    uint64
@@ -195,6 +199,7 @@ func New(opts Options) *Sim {
 			skew:     0.8 + 0.4*s.rng.Float64(),
 			recvSnap: map[uint64]fsmState{},
 			pending:  map[uint64]pendingOp{},
+			reads:    map[uint64]*readGroup{},
 		}
 		s.nodes = append(s.nodes, n)
 		s.byID[id] = n
@@ -349,6 +354,7 @@ func (s *Sim) crash(n *node, torn bool) {
 	n.queue, n.batch, n.syncing = nil, nil, false
 	n.fsm = n.fsmDur
 	n.recvSnap = map[uint64]fsmState{}
+	clear(n.reads)
 	s.abandon(n, ^uint64(0))
 	s.schedule(s.now+s.between(10*ms, second), evRestart, n)
 }
@@ -378,7 +384,8 @@ func (s *Sim) History() []Op {
 	for _, p := range unresolved {
 		switch t := at(s.chk.commitTerm, p.index); {
 		case t == p.term:
-			p.Return = int64(at(s.chk.commitAt, p.index))
+			p.Call = int64(at(s.chk.commitSeq, p.index))
+			p.Return = p.Call
 		case t != 0 || p.index > s.chk.maxCommit:
 			continue
 		default:
@@ -420,6 +427,7 @@ func (s *Sim) process(n *node) {
 	for n.up && n.core.HasReady() {
 		rd := n.core.Ready()
 		s.chk.ready(n, rd)
+		s.readStates(n, rd.ReadStates)
 		n.queue = append(n.queue, rd)
 		for _, m := range rd.Messages {
 			s.send(n, m)
@@ -521,6 +529,7 @@ func (s *Sim) installSnapshot(n *node, snap raft.SnapshotMeta) {
 	s.chk.restored(n, st)
 	n.snap, n.fsm, n.fsmDur = st, st, st
 	s.abandon(n, snap.Index)
+	s.completeReads(n)
 }
 
 func decodeOp(data []byte) (kind byte, key int, value string, ok bool) {
@@ -557,10 +566,14 @@ func (s *Sim) apply(n *node, ents []raft.Entry) {
 		}
 		delete(n.pending, e.Index)
 		if e.Term == p.term {
-			p.Output, p.Return = output, s.now
+			p.Output, p.Return = output, s.stamp()
+			if t := int64(at(s.chk.commitSeq, e.Index)); t != 0 {
+				p.Call, p.Return = t, t
+			}
 			s.history = append(s.history, p.Op)
 		}
 	}
+	s.completeReads(n)
 }
 
 type storage struct {
@@ -606,7 +619,7 @@ func (s *Sim) propose() {
 	data := binary.BigEndian.AppendUint64(nil, s.proposals)
 	var op Op
 	if s.opts.KV {
-		op = Op{Key: s.rng.IntN(kvKeys), Call: s.now}
+		op = Op{Key: s.rng.IntN(kvKeys), Call: s.stamp()}
 		switch r := s.rng.IntN(10); {
 		case r < 5:
 			op.Kind = 'g'
@@ -614,6 +627,10 @@ func (s *Sim) propose() {
 			op.Kind, op.Value = 'p', fmt.Sprintf("%d;", s.proposals)
 		default:
 			op.Kind, op.Value = 'a', fmt.Sprintf("%d;", s.proposals)
+		}
+		if op.Kind == 'g' && s.rng.IntN(2) == 0 {
+			s.readIndex(n, op)
+			return
 		}
 		data = append(append(data, op.Kind, byte(op.Key)), op.Value...)
 	}
@@ -624,7 +641,7 @@ func (s *Sim) propose() {
 	s.proposals++
 	if s.opts.KV {
 		if s.opts.Bug == BugEarlyAck {
-			op.Output, op.Return = n.fsm.kv[op.Key], s.now
+			op.Output, op.Return = n.fsm.kv[op.Key], s.stamp()
 			s.history = append(s.history, op)
 		} else {
 			n.pending[index] = pendingOp{Op: op, index: index, term: term}
@@ -889,4 +906,74 @@ func (t *trace) String() string {
 		out = append(out, '\n')
 	}
 	return string(out)
+}
+
+type readGroup struct {
+	index     uint64
+	confirmed bool
+	ops       []Op
+}
+
+func (s *Sim) readIndex(n *node, op Op) {
+	op.minIndex = s.chk.maxCommit
+	op.viaRead = true
+	id, err := n.core.ReadIndex()
+	if err != nil {
+		return
+	}
+	if s.opts.Bug == BugStaleRead {
+		op.Output, op.Return = n.fsm.kv[op.Key], s.stamp()
+		s.history = append(s.history, op)
+		s.process(n)
+		return
+	}
+	g := n.reads[id]
+	if g == nil {
+		g = &readGroup{}
+		n.reads[id] = g
+	}
+	g.ops = append(g.ops, op)
+	s.process(n)
+}
+
+func (s *Sim) readStates(n *node, states []raft.ReadState) {
+	for _, rs := range states {
+		g := n.reads[rs.ID]
+		switch {
+		case g == nil:
+		case rs.Failed:
+			delete(n.reads, rs.ID)
+		default:
+			g.index, g.confirmed = rs.Index, true
+		}
+	}
+	s.completeReads(n)
+}
+
+func (s *Sim) completeReads(n *node) {
+	for _, id := range slices.Sorted(maps.Keys(n.reads)) {
+		g := n.reads[id]
+		if !g.confirmed || n.fsm.index < g.index {
+			continue
+		}
+		start, end := int64(at(s.chk.commitSeq, n.fsm.index)), s.stamp()
+		if t := int64(at(s.chk.commitSeq, n.fsm.index+1)); t != 0 {
+			end = min(end, t)
+		}
+		for _, op := range g.ops {
+			if n.fsm.index < op.minIndex {
+				s.fail("%s: read returned the state at %d, but %d was committed before it began", n.id, n.fsm.index, op.minIndex)
+				return
+			}
+			op.Call = max(op.Call, start)
+			op.Output, op.Return = n.fsm.kv[op.Key], max(end, op.Call)
+			s.history = append(s.history, op)
+		}
+		delete(n.reads, id)
+	}
+}
+
+func (s *Sim) stamp() int64 {
+	s.seq++
+	return int64(s.seq)
 }

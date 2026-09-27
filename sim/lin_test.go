@@ -105,18 +105,22 @@ func TestSimLinearizable(t *testing.T) {
 	}
 }
 
-func TestSimLinearizableCatchesEarlyAck(t *testing.T) {
-	for seed := uint64(1); seed <= 20; seed++ {
-		opts := config(seed)
-		opts.KV, opts.Bug = true, BugEarlyAck
-		s := New(opts)
-		if err := s.Run(100_000); err != nil {
-			t.Fatal(err)
-		}
-		if res, ops, _ := checkLinearizable(t, s, fmt.Sprintf("earlyack-%d", seed)); res == porcupine.Illegal {
-			t.Logf("caught with seed %d among %d operations", seed, ops)
-			return
-		}
+func TestSimLinearizableCatchesBugs(t *testing.T) {
+	for _, bug := range []Bug{BugEarlyAck, BugStaleRead} {
+		t.Run(fmt.Sprint(bug), func(t *testing.T) {
+			for seed := uint64(1); seed <= 20; seed++ {
+				opts := config(seed)
+				opts.KV, opts.Bug = true, bug
+				s := New(opts)
+				if err := s.Run(100_000); err != nil {
+					t.Fatal(err)
+				}
+				if res, ops, _ := checkLinearizable(t, s, fmt.Sprintf("bug%d-%d", bug, seed)); res == porcupine.Illegal {
+					t.Logf("caught with seed %d among %d operations", seed, ops)
+					return
+				}
+			}
+			t.Fatal("not detected")
+		})
 	}
-	t.Fatal("early acknowledgement not detected")
 }

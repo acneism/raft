@@ -112,9 +112,12 @@ const (
 	MsgHeartbeat
 	MsgHeartbeatResp
 	MsgSnap
+	MsgReadIndex
+	MsgReadIndexResp
+	MsgTimeoutNow
 )
 
-var msgNames = [...]string{"", "MsgApp", "MsgAppResp", "MsgVote", "MsgVoteResp", "MsgPreVote", "MsgPreVoteResp", "MsgHeartbeat", "MsgHeartbeatResp", "MsgSnap"}
+var msgNames = [...]string{"", "MsgApp", "MsgAppResp", "MsgVote", "MsgVoteResp", "MsgPreVote", "MsgPreVoteResp", "MsgHeartbeat", "MsgHeartbeatResp", "MsgSnap", "MsgReadIndex", "MsgReadIndexResp", "MsgTimeoutNow"}
 
 func (t MessageType) String() string {
 	if int(t) < len(msgNames) && t != 0 {
@@ -145,5 +148,12 @@ type Ready struct {
 	Committed            []Entry
 	Messages             []Message
 	MessagesAfterPersist []Message
+	ReadStates           []ReadState
 	MustSync             bool
+}
+
+type ReadState struct {
+	ID     uint64
+	Index  uint64
+	Failed bool
 }

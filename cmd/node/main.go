@@ -203,50 +203,50 @@ func (s *server) digest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"applied": applied, "digest": fmt.Sprintf("%016x", digest), "keys": s.fsm.Len()})
 }
 
-func (s *server) replicate(w http.ResponseWriter, r *http.Request, cmd []byte) (node.Proposal, bool) {
+func (s *server) replicate(w http.ResponseWriter, r *http.Request, cmd []byte) bool {
 	p, err := s.n.Propose(cmd)
 	if err != nil {
 		w.Header().Set("X-Raft-Leader", string(s.n.Status().Lead))
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return p, false
+		return false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	switch err := s.n.Wait(ctx, p); {
 	case err == nil:
-		return p, true
+		return true
 	case errors.Is(err, node.ErrLost):
 		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)
 	}
-	return p, false
+	return false
 }
 
 func (s *server) get(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
-	if !r.URL.Query().Has("consistent") {
-		v, ok := s.fsm.Get(key)
-		if !ok {
-			http.NotFound(w, r)
+	if r.URL.Query().Has("consistent") {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		index, err := s.n.ReadIndex(ctx)
+		if err == nil {
+			err = s.n.WaitApplied(ctx, index)
+		}
+		switch {
+		case errors.Is(err, node.ErrNotLeader):
+			w.Header().Set("X-Raft-Leader", string(s.n.Status().Lead))
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		case err != nil:
+			http.Error(w, err.Error(), http.StatusGatewayTimeout)
 			return
 		}
-		io.WriteString(w, v)
-		return
 	}
-	p, ok := s.replicate(w, r, kvfsm.Get(key))
+	v, ok := s.fsm.Get(r.PathValue("key"))
 	if !ok {
+		http.NotFound(w, r)
 		return
 	}
-	v, exists, found := s.fsm.Result(p.Index)
-	switch {
-	case !found:
-		http.Error(w, "read result evicted", http.StatusInternalServerError)
-	case !exists:
-		http.NotFound(w, r)
-	default:
-		io.WriteString(w, v)
-	}
+	io.WriteString(w, v)
 }
 
 func (s *server) write(w http.ResponseWriter, r *http.Request, cmd func(key, value string) []byte) {
@@ -255,7 +255,7 @@ func (s *server) write(w http.ResponseWriter, r *http.Request, cmd func(key, val
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, ok := s.replicate(w, r, cmd(r.PathValue("key"), string(value))); ok {
+	if s.replicate(w, r, cmd(r.PathValue("key"), string(value))) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

@@ -17,6 +17,7 @@ type testNode struct {
 	core    *Core
 	storage *MemoryStorage
 	applied []Entry
+	reads   []ReadState
 }
 
 func newTestCore(t *testing.T, id NodeID, storage *MemoryStorage, opts ...func(*Config)) *Core {
@@ -71,6 +72,7 @@ func (n *testNode) ready() []Message {
 		n.persist(rd)
 		out = append(out, rd.MessagesAfterPersist...)
 		n.applied = append(n.applied, rd.Committed...)
+		n.reads = append(n.reads, rd.ReadStates...)
 		n.core.Advance(rd)
 	}
 	return out

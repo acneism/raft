@@ -79,6 +79,12 @@ type Core struct {
 	maxInflightBytes          uint64
 	rand                      *rand.Rand
 
+	readSeq    uint64
+	readOpen   bool
+	reads      []readRound
+	forwarded  []uint64
+	readStates []ReadState
+
 	prevSoft SoftState
 	prevHard HardState
 }
@@ -227,6 +233,7 @@ func (c *Core) resetRandomizedElectionTimeout() {
 }
 
 func (c *Core) reset(term uint64) {
+	c.failReads()
 	if c.term != term {
 		c.term = term
 		c.vote = None
@@ -244,6 +251,7 @@ func (c *Core) reset(term uint64) {
 		pr.reset(ProgressProbe)
 		pr.Match, pr.Next = 0, last+1
 		pr.RecentActive, pr.forceSend, pr.sentCommit = false, false, 0
+		pr.readAck = 0
 		if id == c.id {
 			pr.Match = c.log.lastStable()
 		}
@@ -315,7 +323,7 @@ func (c *Core) send(m Message) {
 	if m.Term == 0 {
 		m.Term = c.term
 	}
-	early := m.Type == MsgHeartbeatResp ||
+	early := m.Type == MsgHeartbeatResp || m.Type == MsgReadIndex || m.Type == MsgReadIndexResp ||
 		c.state == StateLeader && c.durableTerm == c.term &&
 			(m.Type == MsgApp || m.Type == MsgHeartbeat || m.Type == MsgSnap)
 	if early {
@@ -403,6 +411,10 @@ func (c *Core) stepFollower(m Message) {
 		c.electionElapsed = 0
 		c.lead = m.From
 		c.handleSnapshot(m)
+	case MsgReadIndex:
+		c.send(Message{To: m.From, Type: MsgReadIndexResp, Index: m.Index, Reject: true})
+	case MsgReadIndexResp:
+		c.handleReadIndexResp(m)
 	}
 }
 
@@ -421,6 +433,10 @@ func (c *Core) stepCandidate(m Message) {
 	case MsgSnap:
 		c.becomeFollower(m.Term, m.From)
 		c.handleSnapshot(m)
+	case MsgReadIndex:
+		c.send(Message{To: m.From, Type: MsgReadIndexResp, Index: m.Index, Reject: true})
+	case MsgReadIndexResp:
+		c.handleReadIndexResp(m)
 	case respType:
 		switch c.trk.recordVote(m.From, !m.Reject) {
 		case voteWon:
@@ -471,6 +487,8 @@ func (c *Core) stepLeader(m Message) {
 	case MsgHeartbeatResp:
 		pr.RecentActive = true
 		pr.probeSent = false
+		pr.readAck = max(pr.readAck, m.Index)
+		c.confirmReads()
 		if pr.Match < c.log.lastIndex() || pr.State == ProgressProbe {
 			if pr.State == ProgressReplicate && pr.inflights.full() {
 				pr.inflights.freeFirst()
@@ -478,6 +496,8 @@ func (c *Core) stepLeader(m Message) {
 			pr.forceSend = true
 			c.sendPending = true
 		}
+	case MsgReadIndex:
+		c.handleReadIndex(m)
 	}
 }
 
@@ -493,7 +513,7 @@ func (c *Core) bcastHeartbeat() {
 			continue
 		}
 		commit := min(c.trk.progress[id].Match, c.log.committed)
-		c.send(Message{To: id, Type: MsgHeartbeat, Commit: commit})
+		c.send(Message{To: id, Type: MsgHeartbeat, Commit: commit, Index: c.readSeq})
 	}
 }
 
@@ -584,7 +604,7 @@ func (c *Core) handleAppendEntries(m Message) {
 
 func (c *Core) handleHeartbeat(m Message) {
 	c.log.commitTo(m.Commit)
-	c.send(Message{To: m.From, Type: MsgHeartbeatResp})
+	c.send(Message{To: m.From, Type: MsgHeartbeatResp, Index: m.Index})
 }
 
 func (c *Core) handleSnapshot(m Message) {
@@ -622,7 +642,7 @@ func (c *Core) HasReady() bool {
 	if hs := c.hardState(); hs != c.prevHard {
 		return true
 	}
-	return len(c.msgs) > 0 || len(c.msgsAfterPersist) > 0 ||
+	return len(c.msgs) > 0 || len(c.msgsAfterPersist) > 0 || len(c.readStates) > 0 ||
 		(c.state == StateLeader && c.sendPending) ||
 		len(c.log.unstable.nextEntries()) > 0 || c.log.unstable.nextSnapshot() != nil ||
 		c.log.hasNextCommittedEnts()
@@ -641,6 +661,7 @@ func (c *Core) Ready() Ready {
 		MessagesAfterPersist: c.msgsAfterPersist,
 	}
 	c.msgs, c.msgsAfterPersist = nil, nil
+	rd.ReadStates, c.readStates, c.readOpen = c.readStates, nil, false
 	if ss := c.softState(); ss != c.prevSoft {
 		rd.SoftState = &ss
 		c.prevSoft = ss

@@ -79,9 +79,10 @@ type Node struct {
 	snapRoot string
 	logger   *slog.Logger
 
-	mu   sync.Mutex
-	core *raft.Core
-	obs  Event
+	mu    sync.Mutex
+	core  *raft.Core
+	obs   Event
+	reads map[uint64][]chan readResult
 
 	recvc      chan raft.Message
 	notifyc    chan struct{}
@@ -163,6 +164,7 @@ func Open(cfg Config) (*Node, error) {
 		waiters:    map[uint64][]waiter{},
 		appliedCh:  make(chan struct{}),
 		eventOut:   make(chan Event, 64),
+		reads:      map[uint64][]chan readResult{},
 	}
 	n.pq.init()
 	n.aq.init()

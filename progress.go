@@ -18,6 +18,7 @@ type Progress struct {
 	probeSent       bool
 	forceSend       bool
 	sentCommit      uint64
+	readAck         uint64
 	inflights       inflights
 	IsLearner       bool
 }
@@ -230,4 +231,17 @@ func (t *tracker) quorumActive(self NodeID) bool {
 		}
 	}
 	return n >= t.quorum()
+}
+
+func (t *tracker) readConfirmed(self NodeID) uint64 {
+	t.matchBuf = t.matchBuf[:0]
+	for _, id := range t.voters {
+		ack := t.progress[id].readAck
+		if id == self {
+			ack = ^uint64(0)
+		}
+		t.matchBuf = append(t.matchBuf, ack)
+	}
+	slices.Sort(t.matchBuf)
+	return t.matchBuf[len(t.matchBuf)-t.quorum()]
 }

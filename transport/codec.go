@@ -164,7 +164,7 @@ func (d *decoder) message() raft.Message {
 		s := d.snapshotMeta()
 		m.Snapshot = &s
 	}
-	if m.Type == 0 || m.Type > raft.MsgSnap || flags > 3 {
+	if m.Type == 0 || m.Type > raft.MsgTimeoutNow || flags > 3 {
 		d.fail()
 	}
 	return m

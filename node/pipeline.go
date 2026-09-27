@@ -146,6 +146,9 @@ func (n *Node) processReady() {
 	for n.core.HasReady() {
 		rds = append(rds, n.core.Ready())
 	}
+	for i := range rds {
+		n.resolveReads(rds[i].ReadStates)
+	}
 	n.observe()
 	n.mu.Unlock()
 	var job applyJob
