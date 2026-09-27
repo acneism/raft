@@ -659,6 +659,11 @@ func (c *Core) Ready() Ready {
 }
 
 func (c *Core) Advance(rd Ready) {
+	c.AdvancePersist(rd)
+	c.AdvanceApply(rd)
+}
+
+func (c *Core) AdvancePersist(rd Ready) {
 	c.durableTerm = max(c.durableTerm, rd.HardState.Term)
 	if rd.Snapshot != nil {
 		c.log.unstable.stableSnapTo(rd.Snapshot.Index)
@@ -667,12 +672,15 @@ func (c *Core) Advance(rd Ready) {
 	if n := len(rd.Entries); n > 0 {
 		c.log.unstable.stableTo(rd.Entries[n-1].Index, rd.Entries[n-1].Term)
 	}
-	if n := len(rd.Committed); n > 0 {
-		c.log.appliedTo(rd.Committed[n-1].Index)
-	}
 	if c.state == StateLeader {
 		if c.trk.progress[c.id].maybeUpdate(c.log.lastStable()) {
 			c.maybeCommit()
 		}
+	}
+}
+
+func (c *Core) AdvanceApply(rd Ready) {
+	if n := len(rd.Committed); n > 0 {
+		c.log.appliedTo(rd.Committed[n-1].Index)
 	}
 }

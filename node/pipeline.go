@@ -2,30 +2,33 @@ package node
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/acneism/raft"
 )
 
-type readyQueue struct {
+type queue[T any] struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
-	items  []raft.Ready
+	items  []T
 	closed bool
 }
 
-func (q *readyQueue) push(rds []raft.Ready) {
-	if len(rds) == 0 {
+func (q *queue[T]) init() { q.cond = sync.NewCond(&q.mu) }
+
+func (q *queue[T]) push(items ...T) {
+	if len(items) == 0 {
 		return
 	}
 	q.mu.Lock()
-	q.items = append(q.items, rds...)
+	q.items = append(q.items, items...)
 	q.mu.Unlock()
 	q.cond.Signal()
 }
 
-func (q *readyQueue) popAll() ([]raft.Ready, bool) {
+func (q *queue[T]) popAll() ([]T, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for len(q.items) == 0 && !q.closed {
@@ -39,7 +42,7 @@ func (q *readyQueue) popAll() ([]raft.Ready, bool) {
 	return items, true
 }
 
-func (q *readyQueue) close() {
+func (q *queue[T]) close() {
 	q.mu.Lock()
 	q.closed = true
 	q.mu.Unlock()
@@ -47,8 +50,9 @@ func (q *readyQueue) close() {
 }
 
 type applyJob struct {
-	rds     []raft.Ready
-	barrier chan struct{}
+	rds    []raft.Ready
+	paused chan struct{}
+	resume chan struct{}
 }
 
 func (n *Node) run() {
@@ -95,10 +99,17 @@ func (n *Node) run() {
 				}
 			}
 			n.mu.Unlock()
+		case rds := <-n.persistedc:
+			n.mu.Lock()
+			for _, rd := range rds {
+				n.core.AdvancePersist(rd)
+			}
+			n.observe()
+			n.mu.Unlock()
 		case rds := <-n.donec:
 			n.mu.Lock()
 			for _, rd := range rds {
-				n.core.Advance(rd)
+				n.core.AdvanceApply(rd)
 			}
 			n.observe()
 			n.mu.Unlock()
@@ -137,7 +148,11 @@ func (n *Node) processReady() {
 	}
 	n.observe()
 	n.mu.Unlock()
+	var job applyJob
 	for i := range rds {
+		if len(rds[i].Committed) > 0 {
+			job.rds = append(job.rds, raft.Ready{Committed: rds[i].Committed})
+		}
 		if n.cfg.SerialPersist {
 			rds[i].MessagesAfterPersist = append(rds[i].Messages, rds[i].MessagesAfterPersist...)
 			rds[i].Messages = nil
@@ -145,7 +160,10 @@ func (n *Node) processReady() {
 		}
 		n.send(rds[i].Messages)
 	}
-	n.pq.push(rds)
+	if len(job.rds) > 0 || n.snapWanted.Load() {
+		n.aq.push(job)
+	}
+	n.pq.push(rds...)
 }
 
 func (n *Node) send(msgs []raft.Message) {
@@ -166,7 +184,6 @@ func (n *Node) send(msgs []raft.Message) {
 
 func (n *Node) persister() {
 	defer n.wg.Done()
-	defer close(n.applyc)
 	for {
 		rds, ok := n.pq.popAll()
 		if !ok {
@@ -181,6 +198,13 @@ func (n *Node) persister() {
 			}
 			group := rds[:k]
 			rds = rds[k:]
+			if s := group[0].Snapshot; s != nil {
+				if err := n.installSnapshot(*s); err != nil {
+					n.fail(err)
+					return
+				}
+				n.aq.push(applyJob{rds: []raft.Ready{{Snapshot: s}}})
+			}
 			if err := n.persist(group); err != nil {
 				n.fail(err)
 				return
@@ -189,7 +213,7 @@ func (n *Node) persister() {
 				n.send(group[i].MessagesAfterPersist)
 			}
 			select {
-			case n.applyc <- applyJob{rds: group}:
+			case n.persistedc <- group:
 			case <-n.stopc:
 				return
 			}
@@ -198,21 +222,34 @@ func (n *Node) persister() {
 }
 
 func (n *Node) persist(group []raft.Ready) error {
-	if s := group[0].Snapshot; s != nil {
-		if err := n.installSnapshot(*s); err != nil {
-			return err
-		}
-	}
+	var ents []raft.Entry
+	var hs raft.HardState
 	sync := false
 	for i := range group {
 		rd := &group[i]
-		if err := n.log.Append(rd.Entries); err != nil {
-			return err
+		if len(rd.Entries) > 0 {
+			if len(ents) > 0 && rd.Entries[0].Index != ents[len(ents)-1].Index+1 {
+				if err := n.log.Append(ents); err != nil {
+					return err
+				}
+				ents = nil
+			}
+			if ents == nil {
+				ents = slices.Clip(rd.Entries)
+			} else {
+				ents = append(ents, rd.Entries...)
+			}
 		}
-		if err := n.log.SetHardState(rd.HardState); err != nil {
-			return err
+		if !rd.HardState.IsEmpty() {
+			hs = rd.HardState
 		}
 		sync = sync || rd.MustSync
+	}
+	if err := n.log.Append(ents); err != nil {
+		return err
+	}
+	if err := n.log.SetHardState(hs); err != nil {
+		return err
 	}
 	if sync {
 		return n.log.Sync()
@@ -220,52 +257,78 @@ func (n *Node) persist(group []raft.Ready) error {
 	return nil
 }
 
-func (n *Node) barrier() bool {
-	done := make(chan struct{})
+func (n *Node) pauseApplier() (resume func(), ok bool) {
+	job := applyJob{paused: make(chan struct{}), resume: make(chan struct{})}
+	n.aq.push(job)
 	select {
-	case n.applyc <- applyJob{barrier: done}:
+	case <-job.paused:
+		return func() { close(job.resume) }, true
 	case <-n.stopc:
-		return false
-	}
-	select {
-	case <-done:
-		return true
-	case <-n.stopc:
-		return false
+		return nil, false
 	}
 }
 
 func (n *Node) applier() {
 	defer n.wg.Done()
-	for job := range n.applyc {
-		if job.barrier != nil {
-			close(job.barrier)
-			continue
+	for {
+		jobs, ok := n.aq.popAll()
+		if !ok {
+			return
 		}
-		for i := range job.rds {
-			rd := &job.rds[i]
-			if rd.Snapshot != nil {
-				n.appliedTo(rd.Snapshot.Index, nil)
-			}
-			if len(rd.Committed) > 0 {
-				if err := n.fsm.Apply(rd.Committed); err != nil {
+		var ents []raft.Entry
+		var done []raft.Ready
+		flush := func() bool {
+			if len(ents) > 0 {
+				if err := n.fsm.Apply(ents); err != nil {
 					n.fail(fmt.Errorf("node: apply: %w", err))
+					return false
+				}
+				n.appliedTo(ents[len(ents)-1].Index, ents)
+				ents = nil
+			}
+			if err := n.maybeCompact(); err != nil {
+				n.fail(err)
+				return false
+			}
+			if err := n.maybeSnapshot(); err != nil {
+				n.fail(err)
+				return false
+			}
+			if len(done) > 0 {
+				select {
+				case n.donec <- done:
+				case <-n.stopc:
+					return false
+				}
+				done = nil
+			}
+			return true
+		}
+		for _, job := range jobs {
+			if job.paused != nil {
+				if !flush() {
 					return
 				}
-				n.appliedTo(rd.Committed[len(rd.Committed)-1].Index, rd.Committed)
+				close(job.paused)
+				select {
+				case <-job.resume:
+				case <-n.stopc:
+					return
+				}
+				continue
 			}
+			for _, rd := range job.rds {
+				if rd.Snapshot != nil {
+					if !flush() {
+						return
+					}
+					n.appliedTo(rd.Snapshot.Index, nil)
+				}
+				ents = append(ents, rd.Committed...)
+			}
+			done = append(done, job.rds...)
 		}
-		if err := n.maybeCompact(); err != nil {
-			n.fail(err)
-			return
-		}
-		if err := n.maybeSnapshot(); err != nil {
-			n.fail(err)
-			return
-		}
-		select {
-		case n.donec <- job.rds:
-		case <-n.stopc:
+		if !flush() {
 			return
 		}
 	}

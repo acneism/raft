@@ -144,6 +144,12 @@ func (c *checker) apply(n *node, e raft.Entry) {
 		c.s.fail("%s: applies %d before commit reached it (%d)", n.id, e.Index, n.commit)
 		return
 	}
+	if first, _ := n.disk.FirstIndex(); e.Index >= first {
+		if t, err := n.disk.Term(e.Index); err != nil || t != e.Term {
+			c.s.fail("%s: applies (%d, %d) that is not on its disk", n.id, e.Index, e.Term)
+			return
+		}
+	}
 	if t := at(c.commitTerm, e.Index); t != 0 && t != e.Term {
 		c.s.fail("State Machine Safety: %s applies (%d, %d), committed term %d", n.id, e.Index, e.Term, t)
 		return

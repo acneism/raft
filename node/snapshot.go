@@ -69,9 +69,11 @@ func (n *Node) ensureSnapshotFiles() error {
 }
 
 func (n *Node) installSnapshot(s raft.SnapshotMeta) error {
-	if !n.barrier() {
+	resume, ok := n.pauseApplier()
+	if !ok {
 		return errors.New("node: stopped while installing a snapshot")
 	}
+	defer resume()
 	dir := transport.IncomingDir(n.snapRoot, s)
 	if !exists(dir) {
 		return fmt.Errorf("node: snapshot %d was never received", s.Index)

@@ -275,15 +275,18 @@ func (l *raftLog) appliedTo(i uint64) {
 	l.applying = max(l.applying, i)
 }
 
-func (l *raftLog) hasNextCommittedEnts() bool { return l.applying < l.committed }
+func (l *raftLog) applicable() uint64 { return min(l.committed, l.lastStable()) }
+
+func (l *raftLog) hasNextCommittedEnts() bool { return l.applying < l.applicable() }
 
 func (l *raftLog) nextCommittedEnts() []Entry {
 	if !l.hasNextCommittedEnts() {
 		return nil
 	}
-	ents, err := l.slice(l.applying+1, l.committed+1, l.maxApplyingSize)
+	hi := l.applicable()
+	ents, err := l.slice(l.applying+1, hi+1, l.maxApplyingSize)
 	if err != nil {
-		panic(fmt.Sprintf("raft: committed entries [%d, %d]: %v", l.applying+1, l.committed, err))
+		panic(fmt.Sprintf("raft: committed entries [%d, %d]: %v", l.applying+1, hi, err))
 	}
 	return ents
 }

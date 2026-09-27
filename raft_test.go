@@ -306,13 +306,20 @@ func TestCommitWithoutLeaderDisk(t *testing.T) {
 		t.Fatalf("four follower copies did not commit: committed %d, want %d", c, idx)
 	}
 	next := ln.core.Ready()
-	if len(next.Committed) != 1 || next.Committed[0].Index != idx {
-		t.Fatalf("committed entries %+v", next.Committed)
+	if len(next.Committed) != 0 {
+		t.Fatalf("entries handed out for applying before the leader's disk has them: %+v", next.Committed)
 	}
 	ln.persist(rd)
-	ln.core.Advance(rd)
+	ln.core.AdvancePersist(rd)
+	after := ln.core.Ready()
+	if len(after.Committed) != 1 || after.Committed[0].Index != idx {
+		t.Fatalf("committed entries %+v", after.Committed)
+	}
 	ln.persist(next)
 	ln.core.Advance(next)
+	ln.persist(after)
+	ln.core.Advance(after)
+	ln.core.AdvanceApply(rd)
 }
 
 func TestSoleVoterHoldsMessagesUntilTermDurable(t *testing.T) {
@@ -693,14 +700,17 @@ func TestHardStateCommitCoversOnlyDurableEntries(t *testing.T) {
 	if len(rd.Entries) != 3 || rd.HardState.Commit != 0 {
 		t.Fatalf("first ready: %d entries, persisted commit %d, want 3 and 0", len(rd.Entries), rd.HardState.Commit)
 	}
-	if len(rd.Committed) != 3 {
-		t.Fatalf("committed %d entries, want 3 (applied after this Ready is durable)", len(rd.Committed))
+	if len(rd.Committed) != 0 {
+		t.Fatalf("committed %d entries before they are durable, want 0", len(rd.Committed))
 	}
 	n.persist(rd)
 	c.Advance(rd)
 	rd = c.Ready()
 	if rd.HardState.Commit != 3 || rd.MustSync {
 		t.Fatalf("second ready: commit %d must-sync %v, want 3 and false", rd.HardState.Commit, rd.MustSync)
+	}
+	if len(rd.Committed) != 3 {
+		t.Fatalf("second ready: committed %d entries, want 3", len(rd.Committed))
 	}
 }
 

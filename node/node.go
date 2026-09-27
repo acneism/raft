@@ -83,14 +83,15 @@ type Node struct {
 	core *raft.Core
 	obs  Event
 
-	recvc     chan raft.Message
-	notifyc   chan struct{}
-	stopc     chan struct{}
-	donec     chan []raft.Ready
-	applyc    chan applyJob
-	pq        readyQueue
-	wg        sync.WaitGroup
-	closeOnce sync.Once
+	recvc      chan raft.Message
+	notifyc    chan struct{}
+	stopc      chan struct{}
+	persistedc chan []raft.Ready
+	donec      chan []raft.Ready
+	pq         queue[raft.Ready]
+	aq         queue[applyJob]
+	wg         sync.WaitGroup
+	closeOnce  sync.Once
 
 	repMu   sync.Mutex
 	reports []report
@@ -148,22 +149,23 @@ func Open(cfg Config) (*Node, error) {
 	}
 	slices.Sort(conf.Voters)
 	n := &Node{
-		cfg:       cfg,
-		id:        cfg.ID,
-		conf:      conf,
-		fsm:       cfg.StateMachine,
-		snapRoot:  filepath.Join(cfg.Dir, "snap"),
-		logger:    cfg.Logger.With("node", cfg.ID),
-		recvc:     make(chan raft.Message, 4096),
-		notifyc:   make(chan struct{}, 1),
-		stopc:     make(chan struct{}),
-		donec:     make(chan []raft.Ready, 64),
-		applyc:    make(chan applyJob, 64),
-		waiters:   map[uint64][]waiter{},
-		appliedCh: make(chan struct{}),
-		eventOut:  make(chan Event, 64),
+		cfg:        cfg,
+		id:         cfg.ID,
+		conf:       conf,
+		fsm:        cfg.StateMachine,
+		snapRoot:   filepath.Join(cfg.Dir, "snap"),
+		logger:     cfg.Logger.With("node", cfg.ID),
+		recvc:      make(chan raft.Message, 4096),
+		notifyc:    make(chan struct{}, 1),
+		stopc:      make(chan struct{}),
+		persistedc: make(chan []raft.Ready, 64),
+		donec:      make(chan []raft.Ready, 64),
+		waiters:    map[uint64][]waiter{},
+		appliedCh:  make(chan struct{}),
+		eventOut:   make(chan Event, 64),
 	}
-	n.pq.cond = sync.NewCond(&n.pq.mu)
+	n.pq.init()
+	n.aq.init()
 	n.events.notify = make(chan struct{}, 1)
 	if err := os.MkdirAll(n.snapRoot, 0o755); err != nil {
 		return nil, err
@@ -323,6 +325,7 @@ func (n *Node) Close() error {
 		close(n.stopc)
 		n.tr.Close()
 		n.pq.close()
+		n.aq.close()
 		n.wg.Wait()
 		n.log.Close()
 		n.wmu.Lock()

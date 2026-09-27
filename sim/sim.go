@@ -122,10 +122,11 @@ type node struct {
 	slowDisk bool
 	skew     float64
 
-	queue      []raft.Ready
-	batch      []raft.Ready
-	syncing    bool
-	processing bool
+	queue        []raft.Ready
+	batch        []raft.Ready
+	batchApplied bool
+	syncing      bool
+	processing   bool
 
 	fsm        fsmState
 	fsmDur     fsmState
@@ -433,8 +434,8 @@ func (s *Sim) process(n *node) {
 	if !n.up {
 		return
 	}
-	s.startSync(n)
 	s.chk.status(n)
+	s.startSync(n)
 }
 
 func (s *Sim) startSync(n *node) {
@@ -450,7 +451,10 @@ func (s *Sim) startSync(n *node) {
 	}
 	n.batch = slices.Clone(n.queue[:k])
 	n.queue = slices.Clone(n.queue[k:])
-	n.syncing = true
+	n.syncing, n.batchApplied = true, false
+	if n.batch[0].Snapshot == nil && s.rng.IntN(2) == 0 {
+		s.applyBatch(n)
+	}
 	d := s.between(100*us, 3*ms)
 	if n.slowDisk {
 		d += s.between(50*ms, 500*ms)
@@ -481,18 +485,27 @@ func (s *Sim) sync(n *node) {
 		s.crash(n, false)
 		return
 	}
-	batch := n.batch
-	n.batch, n.syncing = nil, false
-	for _, rd := range batch {
+	for _, rd := range n.batch {
 		if s.opts.Bug != BugSendBeforePersist {
 			for _, m := range rd.MessagesAfterPersist {
 				s.send(n, m)
 			}
 		}
-		s.apply(n, rd.Committed)
-		n.core.Advance(rd)
+		n.core.AdvancePersist(rd)
 	}
+	if !n.batchApplied {
+		s.applyBatch(n)
+	}
+	n.batch, n.syncing = nil, false
 	s.process(n)
+}
+
+func (s *Sim) applyBatch(n *node) {
+	n.batchApplied = true
+	for _, rd := range n.batch {
+		s.apply(n, rd.Committed)
+		n.core.AdvanceApply(rd)
+	}
 }
 
 func (s *Sim) installSnapshot(n *node, snap raft.SnapshotMeta) {
