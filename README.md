@@ -1,5 +1,7 @@
 # raft
 
+[![CI](https://github.com/acneism/raft/actions/workflows/ci.yml/badge.svg)](https://github.com/acneism/raft/actions/workflows/ci.yml)
+
 Raft consensus for Go, built for state machines that keep their own data on disk.
 
 ```bash
