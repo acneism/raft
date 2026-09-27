@@ -543,7 +543,7 @@ func (c *Core) maybeSendSnapshot(to NodeID, pr *Progress) bool {
 		panic(err)
 	}
 	if snap.Index == 0 || snap.Index+1 < c.log.firstIndex() {
-		panic(fmt.Sprintf("raft: snapshot %d does not cover the compacted log (first index %d)", snap.Index, c.log.firstIndex()))
+		return false
 	}
 	pr.becomeSnapshot(snap.Index)
 	c.send(Message{To: to, Type: MsgSnap, Snapshot: &snap})

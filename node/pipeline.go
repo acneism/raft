@@ -245,7 +245,6 @@ func (n *Node) applier() {
 		for i := range job.rds {
 			rd := &job.rds[i]
 			if rd.Snapshot != nil {
-				n.lastSnap = rd.Snapshot.Index
 				n.appliedTo(rd.Snapshot.Index, nil)
 			}
 			if len(rd.Committed) > 0 {
@@ -255,6 +254,10 @@ func (n *Node) applier() {
 				}
 				n.appliedTo(rd.Committed[len(rd.Committed)-1].Index, rd.Committed)
 			}
+		}
+		if err := n.maybeCompact(); err != nil {
+			n.fail(err)
+			return
 		}
 		if err := n.maybeSnapshot(); err != nil {
 			n.fail(err)

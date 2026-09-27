@@ -259,8 +259,13 @@ func TestKillCycles(t *testing.T) {
 		}
 		return true
 	})
-	t.Logf("%d kill cycles in %v: %d acknowledged writes (%.0f/s), %d with unknown outcome, %d missing",
-		*killCycles, elapsed.Round(time.Second), nAcked.Load(), float64(nAcked.Load())/elapsed.Seconds(), nUnknown.Load(), missing)
+	snapshots := 0
+	for _, p := range h.procs {
+		b, _ := os.ReadFile(p.out.Name())
+		snapshots += strings.Count(string(b), "created a snapshot")
+	}
+	t.Logf("%d kill cycles in %v: %d acknowledged writes (%.0f/s), %d with unknown outcome, %d missing, %d snapshots",
+		*killCycles, elapsed.Round(time.Second), nAcked.Load(), float64(nAcked.Load())/elapsed.Seconds(), nUnknown.Load(), missing, snapshots)
 	if missing > 0 {
 		t.Fatalf("%d acknowledged writes missing; logs in %s", missing, h.dir)
 	}

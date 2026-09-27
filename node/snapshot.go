@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/acneism/raft"
 	"github.com/acneism/raft/internal/fsx"
 	"github.com/acneism/raft/transport"
+	"github.com/acneism/raft/wal"
 )
 
 func (n *Node) snapDir(s raft.SnapshotMeta) string {
@@ -90,13 +92,47 @@ func (n *Node) installSnapshot(s raft.SnapshotMeta) error {
 	return nil
 }
 
-func (n *Node) maybeSnapshot() error {
+type storage struct {
+	*wal.Log
+	wanted *atomic.Bool
+}
+
+func (s storage) Snapshot() (raft.SnapshotMeta, error) {
+	snap, _ := s.Log.Snapshot()
+	if first, _ := s.FirstIndex(); snap.Index+1 < first {
+		s.wanted.Store(true)
+		return raft.SnapshotMeta{}, raft.ErrSnapshotTemporarilyUnavailable
+	}
+	return snap, nil
+}
+
+func (n *Node) maybeCompact() error {
 	n.wmu.Lock()
 	applied := n.applied
 	n.wmu.Unlock()
-	if applied < n.lastSnap+n.cfg.SnapshotEntries {
+	durable := min(applied, n.fsm.DurableIndex())
+	if durable <= n.cfg.TrailingEntries {
 		return nil
 	}
+	to := durable - n.cfg.TrailingEntries
+	if first, _ := n.log.FirstIndex(); to < first-1+n.cfg.CompactEntries {
+		return nil
+	}
+	return n.log.Compact(to)
+}
+
+func (n *Node) maybeSnapshot() error {
+	if !n.snapWanted.Swap(false) {
+		return nil
+	}
+	snap, _ := n.log.Snapshot()
+	first, _ := n.log.FirstIndex()
+	if snap.Index+1 >= first {
+		return nil
+	}
+	n.wmu.Lock()
+	applied := n.applied
+	n.wmu.Unlock()
 	tmp := filepath.Join(n.snapRoot, "tmp")
 	os.RemoveAll(tmp)
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
@@ -106,32 +142,21 @@ func (n *Node) maybeSnapshot() error {
 	if err != nil {
 		return fmt.Errorf("node: snapshot: %w", err)
 	}
-	if meta.Index <= n.lastSnap || meta.Index > applied {
+	if meta.Index+1 < first || meta.Index > applied {
 		os.RemoveAll(tmp)
-		return nil
+		return fmt.Errorf("node: state machine snapshot at %d, want between the compacted index %d and the applied index %d", meta.Index, first-1, applied)
 	}
-	term, err := n.log.Term(meta.Index)
-	if err != nil {
+	if meta.Term, err = n.log.Term(meta.Index); err != nil {
 		os.RemoveAll(tmp)
-		return nil
+		return err
 	}
-	meta.Term = term
 	if err := n.promote(tmp, meta); err != nil {
 		return err
 	}
 	if _, err := n.log.CreateSnapshot(meta.Index, n.conf); err != nil {
 		return err
 	}
-	n.lastSnap = meta.Index
-	durable := min(meta.Index, n.fsm.DurableIndex())
-	if durable > n.cfg.TrailingEntries {
-		first, _ := n.log.FirstIndex()
-		if c := durable - n.cfg.TrailingEntries; c >= first {
-			if err := n.log.Compact(c); err != nil {
-				return err
-			}
-		}
-	}
+	n.logger.Info("created a snapshot for a lagging follower", "index", meta.Index)
 	n.prune(meta.Index)
 	return nil
 }

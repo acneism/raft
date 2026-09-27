@@ -127,11 +127,12 @@ type node struct {
 	syncing    bool
 	processing bool
 
-	fsm      fsmState
-	fsmDur   fsmState
-	snap     fsmState
-	recvSnap map[uint64]fsmState
-	pending  map[uint64]pendingOp
+	fsm        fsmState
+	fsmDur     fsmState
+	snap       fsmState
+	snapWanted bool
+	recvSnap   map[uint64]fsmState
+	pending    map[uint64]pendingOp
 
 	view      logView
 	commit    uint64
@@ -313,7 +314,7 @@ func (s *Sim) restart(n *node) {
 		ID:                       n.id,
 		ElectionTick:             electionTick,
 		HeartbeatTick:            heartbeatTick,
-		Storage:                  n.disk,
+		Storage:                  storage{n.disk, n},
 		Applied:                  n.fsm.index,
 		MaxSizePerMsg:            uint64(64 + s.rng.IntN(512)),
 		MaxInflightMsgs:          1 + s.rng.IntN(8),
@@ -377,7 +378,7 @@ func (s *Sim) History() []Op {
 		switch t := at(s.chk.commitTerm, p.index); {
 		case t == p.term:
 			p.Return = int64(at(s.chk.commitAt, p.index))
-		case t != 0:
+		case t != 0 || p.index > s.chk.maxCommit:
 			continue
 		default:
 			p.Unknown = true
@@ -549,18 +550,32 @@ func (s *Sim) apply(n *node, ents []raft.Entry) {
 	}
 }
 
+type storage struct {
+	*raft.MemoryStorage
+	n *node
+}
+
+func (st storage) Snapshot() (raft.SnapshotMeta, error) {
+	snap, _ := st.MemoryStorage.Snapshot()
+	if first, _ := st.FirstIndex(); snap.Index+1 < first {
+		st.n.snapWanted = true
+		return raft.SnapshotMeta{}, raft.ErrSnapshotTemporarilyUnavailable
+	}
+	return snap, nil
+}
+
 func (s *Sim) compact(n *node) {
 	snap, _ := n.disk.Snapshot()
-	if d := n.fsmDur; d.index > snap.Index {
+	if d := n.fsmDur; d.index > snap.Index && (n.snapWanted || s.rng.IntN(8) == 0) {
 		if _, err := n.disk.CreateSnapshot(d.index, s.conf); err != nil {
 			s.fail("%s: create snapshot: %v", n.id, err)
 			return
 		}
 		n.snap = d
-		snap.Index = d.index
 	}
+	n.snapWanted = false
 	first, _ := n.disk.FirstIndex()
-	to := snap.Index - min(snap.Index, uint64(s.rng.IntN(20)))
+	to := n.fsmDur.index - min(n.fsmDur.index, uint64(s.rng.IntN(20)))
 	if to >= first {
 		if err := n.disk.Compact(to); err != nil {
 			s.fail("%s: compact %d: %v", n.id, to, err)

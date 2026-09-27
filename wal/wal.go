@@ -518,8 +518,8 @@ func (l *Log) ApplySnapshot(s raft.SnapshotMeta) error {
 	if l.closed {
 		return ErrClosed
 	}
-	if s.Index <= l.meta.snapshot.Index {
-		return fmt.Errorf("wal: snapshot %d is not newer than %d", s.Index, l.meta.snapshot.Index)
+	if s.Index <= max(l.meta.snapshot.Index, l.meta.compactIndex) {
+		return fmt.Errorf("wal: snapshot %d is not newer than %d", s.Index, max(l.meta.snapshot.Index, l.meta.compactIndex))
 	}
 	m := meta{epoch: l.meta.epoch + 1, compactIndex: s.Index, compactTerm: s.Term, snapshot: s}
 	if err := l.writeMeta(m); err != nil {
@@ -572,8 +572,8 @@ func (l *Log) Compact(i uint64) error {
 	if i <= l.meta.compactIndex {
 		return raft.ErrCompacted
 	}
-	if i > l.meta.snapshot.Index || i > l.lastIndex() {
-		return fmt.Errorf("wal: compact %d past snapshot %d or last index %d", i, l.meta.snapshot.Index, l.lastIndex())
+	if i > l.lastIndex() {
+		return fmt.Errorf("wal: compact %d past last index %d", i, l.lastIndex())
 	}
 	m := l.meta
 	m.compactIndex, m.compactTerm = i, l.locs[i-l.firstIndex()].term

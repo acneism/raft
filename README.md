@@ -18,6 +18,8 @@ go get github.com/acneism/raft
 - **Transport.** Framed TCP with a binary codec, mutual TLS, resumable snapshot transfer.
 - **Node.** `Propose` returns the index and term without waiting for IO, `Wait` always completes, leadership events
   are never lost, and replay after a restart starts at the state machine's durable index.
+- **Snapshots on demand.** The log is compacted behind the state machine's durable index without a snapshot; a
+  snapshot is taken only when a follower falls behind the compacted log.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety
   invariants after every step and the client history for linearizability with
   [Porcupine](https://github.com/anishathalye/porcupine).
@@ -34,6 +36,10 @@ type StateMachine interface {
 	Restore(src node.SnapshotSource) error
 }
 ```
+
+`DurableIndex` is the last index the state machine has on disk: the node replays the log after it on restart and
+compacts the log up to it, keeping `TrailingEntries` more. `Snapshot` writes the applied state into `dir` and returns
+its index, which must not be below `DurableIndex`.
 
 Run a node:
 

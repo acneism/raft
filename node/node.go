@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/acneism/raft"
@@ -62,7 +63,7 @@ type Config struct {
 	NoSync          bool
 	MaxSizePerMsg   uint64
 	MaxInflightMsgs int
-	SnapshotEntries uint64
+	CompactEntries  uint64
 	TrailingEntries uint64
 	SerialPersist   bool
 	Logger          *slog.Logger
@@ -102,9 +103,9 @@ type Node struct {
 	closed     bool
 	err        error
 
-	events   eventQueue
-	eventOut chan Event
-	lastSnap uint64
+	events     eventQueue
+	eventOut   chan Event
+	snapWanted atomic.Bool
 }
 
 type report struct {
@@ -132,8 +133,8 @@ func Open(cfg Config) (*Node, error) {
 	if cfg.HeartbeatTicks <= 0 {
 		cfg.HeartbeatTicks = 10
 	}
-	if cfg.SnapshotEntries == 0 {
-		cfg.SnapshotEntries = 8192
+	if cfg.CompactEntries == 0 {
+		cfg.CompactEntries = 8192
 	}
 	if cfg.TrailingEntries == 0 {
 		cfg.TrailingEntries = 1024
@@ -187,6 +188,9 @@ func (n *Node) start() error {
 	first, _ := n.log.FirstIndex()
 	applied := n.fsm.DurableIndex()
 	if applied+1 < first {
+		if snap.Index+1 < first {
+			return fmt.Errorf("node: state machine is at %d, the log starts at %d and no snapshot covers the gap", applied, first)
+		}
 		if err := n.fsm.Restore(SnapshotSource{Meta: snap, Dir: n.snapDir(snap)}); err != nil {
 			return fmt.Errorf("node: restore snapshot %d: %w", snap.Index, err)
 		}
@@ -196,7 +200,7 @@ func (n *Node) start() error {
 		ID:              n.id,
 		ElectionTick:    n.cfg.ElectionTicks,
 		HeartbeatTick:   n.cfg.HeartbeatTicks,
-		Storage:         n.log,
+		Storage:         storage{n.log, &n.snapWanted},
 		Applied:         applied,
 		MaxSizePerMsg:   n.cfg.MaxSizePerMsg,
 		MaxInflightMsgs: n.cfg.MaxInflightMsgs,
@@ -208,7 +212,6 @@ func (n *Node) start() error {
 	}
 	n.core = core
 	n.applied = applied
-	n.lastSnap = snap.Index
 	peers := map[raft.NodeID]string{}
 	for id, addr := range n.cfg.Peers {
 		if id != n.id {

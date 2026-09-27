@@ -110,7 +110,7 @@ func measureRounds(t *testing.T, mode roundMode, writers, n int) (dist, float64)
 	c := newClusterFSM(t, 3, 1<<30, func(cfg *node.Config) {
 		cfg.SerialPersist = mode.serial
 		cfg.NoSync = mode.noSync
-		cfg.SnapshotEntries = 1 << 30
+		cfg.CompactEntries = 1 << 30
 		cfg.TickInterval = 50 * time.Millisecond
 	})
 	l := c.leader(5 * time.Second)

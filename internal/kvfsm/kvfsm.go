@@ -39,6 +39,7 @@ type FSM struct {
 	batches   int
 	applies   int
 	restores  int
+	snapshots int
 }
 
 func Open(dir string, syncEvery int) (*FSM, error) {
@@ -286,6 +287,7 @@ func writeFileSync(path string, b []byte) error {
 func (s *FSM) Snapshot(dir string) (raft.SnapshotMeta, error) {
 	s.mu.Lock()
 	idx, b := s.applied, record(recState, encodeState(s.applied, s.data))
+	s.snapshots++
 	s.mu.Unlock()
 	if err := writeFileSync(filepath.Join(dir, "state"), b); err != nil {
 		return raft.SnapshotMeta{}, err
@@ -349,10 +351,10 @@ func (s *FSM) Applied() uint64 {
 	return s.applied
 }
 
-func (s *FSM) Stats() (applies, restores int) {
+func (s *FSM) Stats() (applies, restores, snapshots int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.applies, s.restores
+	return s.applies, s.restores, s.snapshots
 }
 
 func (s *FSM) Digest() (uint64, uint64) {

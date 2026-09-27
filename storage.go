@@ -86,8 +86,8 @@ func (s *MemoryStorage) Snapshot() (SnapshotMeta, error) {
 func (s *MemoryStorage) ApplySnapshot(snap SnapshotMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if snap.Index <= s.snap.Index {
-		return fmt.Errorf("raft: snapshot %d is not newer than %d", snap.Index, s.snap.Index)
+	if snap.Index <= max(s.snap.Index, s.ents[0].Index) {
+		return fmt.Errorf("raft: snapshot %d is not newer than %d", snap.Index, max(s.snap.Index, s.ents[0].Index))
 	}
 	s.snap = snap
 	s.ents = []Entry{{Index: snap.Index, Term: snap.Term}}
@@ -100,8 +100,8 @@ func (s *MemoryStorage) CreateSnapshot(i uint64, cs ConfState) (SnapshotMeta, er
 	if i <= s.snap.Index {
 		return SnapshotMeta{}, fmt.Errorf("raft: snapshot %d is not newer than %d", i, s.snap.Index)
 	}
-	if i > s.lastIndex() {
-		return SnapshotMeta{}, fmt.Errorf("raft: snapshot %d is past last index %d", i, s.lastIndex())
+	if i < s.ents[0].Index || i > s.lastIndex() {
+		return SnapshotMeta{}, fmt.Errorf("raft: snapshot %d outside the log [%d, %d]", i, s.ents[0].Index, s.lastIndex())
 	}
 	s.snap = SnapshotMeta{Index: i, Term: s.ents[i-s.ents[0].Index].Term, Conf: cs}
 	return s.snap, nil
@@ -114,8 +114,8 @@ func (s *MemoryStorage) Compact(i uint64) error {
 	if i <= offset {
 		return ErrCompacted
 	}
-	if i > s.snap.Index {
-		return fmt.Errorf("raft: compact %d is past snapshot %d", i, s.snap.Index)
+	if i > s.lastIndex() {
+		return fmt.Errorf("raft: compact %d is past last index %d", i, s.lastIndex())
 	}
 	ents := make([]Entry, 1, uint64(len(s.ents))-(i-offset))
 	ents[0] = Entry{Index: i, Term: s.ents[i-offset].Term}

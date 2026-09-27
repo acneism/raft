@@ -93,7 +93,7 @@ func (c *cluster) start(id raft.NodeID) {
 		PreVote:         true,
 		CheckQuorum:     true,
 		SegmentSize:     64 << 10,
-		SnapshotEntries: 200,
+		CompactEntries:  200,
 		TrailingEntries: 20,
 	}
 	if c.tweak != nil {
@@ -375,7 +375,16 @@ func TestEvents(t *testing.T) {
 }
 
 func TestSnapshotCatchUp(t *testing.T) {
-	c := newCluster(t, 3, nil)
+	c := newCluster(t, 3, func(cfg *node.Config) { cfg.CompactEntries, cfg.TrailingEntries = 100, 100 })
+	for i := range 600 {
+		c.write(fmt.Sprintf("a%d", i), "v")
+	}
+	c.converged(5 * time.Second)
+	for id, m := range c.members {
+		if _, _, snapshots := m.fsm.Stats(); snapshots != 0 {
+			t.Fatalf("%s took %d snapshots while no follower lagged", id, snapshots)
+		}
+	}
 	l := c.leader(5 * time.Second)
 	var lagging raft.NodeID
 	for id := range c.members {
@@ -390,15 +399,25 @@ func TestSnapshotCatchUp(t *testing.T) {
 	}
 	c.start(lagging)
 	c.converged(10 * time.Second)
-	if _, restores := c.members[lagging].fsm.Stats(); restores == 0 {
+	if _, restores, _ := c.members[lagging].fsm.Stats(); restores == 0 {
 		t.Fatal("lagging follower caught up without a snapshot")
+	}
+	snapshots := 0
+	for id, m := range c.members {
+		if id != lagging {
+			_, _, s := m.fsm.Stats()
+			snapshots += s
+		}
+	}
+	if snapshots == 0 {
+		t.Fatal("no snapshot was taken for the lagging follower")
 	}
 	c.write("after", "1")
 	c.converged(5 * time.Second)
 }
 
 func TestRestartReplaysAfterDurableIndex(t *testing.T) {
-	c := newCluster(t, 3, func(cfg *node.Config) { cfg.SnapshotEntries = 1 << 20 })
+	c := newCluster(t, 3, func(cfg *node.Config) { cfg.CompactEntries = 1 << 20 })
 	for i := range 50 {
 		c.write(fmt.Sprintf("k%d", i), "v")
 	}
@@ -408,7 +427,7 @@ func TestRestartReplaysAfterDurableIndex(t *testing.T) {
 	c.stop(l.id)
 	c.start(l.id)
 	c.converged(5 * time.Second)
-	applies, _ := c.members[l.id].fsm.Stats()
+	applies, _, _ := c.members[l.id].fsm.Stats()
 	applied := c.members[l.id].fsm.Applied()
 	if uint64(applies) > applied-durable+5 {
 		t.Fatalf("replayed %d entries, durable index was %d of %d", applies, durable, applied)
@@ -461,7 +480,7 @@ func TestInterruptedRestoreIsRepeated(t *testing.T) {
 		t.Fatal("no snapshot files kept for the retry")
 	}
 	c.start(victim)
-	if _, restores := c.members[victim].fsm.Stats(); restores == 0 {
+	if _, restores, _ := c.members[victim].fsm.Stats(); restores == 0 {
 		t.Fatal("restart did not repeat the restore")
 	}
 	c.converged(10 * time.Second)

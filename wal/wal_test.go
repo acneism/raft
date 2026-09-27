@@ -143,8 +143,8 @@ func TestCompaction(t *testing.T) {
 	if _, err := l.CreateSnapshot(45, testConf); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Compact(46); err == nil {
-		t.Fatal("compacted past the snapshot")
+	if err := l.Compact(61); err == nil {
+		t.Fatal("compacted past the last index")
 	}
 	before := len(l.segs)
 	must(t, l.Compact(40))
@@ -169,6 +169,29 @@ func TestCompaction(t *testing.T) {
 	snap, _ := l.Snapshot()
 	if snap.Index != 45 || snap.Term != 1 {
 		t.Fatalf("snapshot %+v", snap)
+	}
+
+	must(t, l.Compact(52))
+	if _, err := l.CreateSnapshot(50, testConf); err == nil {
+		t.Fatal("snapshot below the compacted index")
+	}
+	if err := l.ApplySnapshot(raft.SnapshotMeta{Index: 50, Term: 1, Conf: testConf}); err == nil {
+		t.Fatal("applied a snapshot below the compacted index")
+	}
+	must(t, l.Close())
+	l = open(t, dir, Options{SegmentSize: 512})
+	defer l.Close()
+	if first, _ := l.FirstIndex(); first != 53 {
+		t.Fatalf("first index past the snapshot %d", first)
+	}
+	if snap, _ := l.Snapshot(); snap.Index != 45 {
+		t.Fatalf("snapshot after compacting past it %+v", snap)
+	}
+	if got := all(t, l); !sameEntries(got, ents(53, 1, 8)) {
+		t.Fatal("entries after compacting past the snapshot differ")
+	}
+	if _, err := l.CreateSnapshot(55, testConf); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -416,7 +439,11 @@ func TestRandomizedCrashRecovery(t *testing.T) {
 							_, err := m.l.CreateSnapshot(i, testConf)
 							must(t, err)
 						}
-						if j := m.l.meta.snapshot.Index; j > m.compact() {
+						j := m.l.meta.snapshot.Index
+						if rng.IntN(2) == 0 {
+							j = m.cur[rng.IntN(n)].Index
+						}
+						if j > m.compact() {
 							must(t, m.l.Compact(j-uint64(rng.IntN(int(j-m.compact())))))
 							m.cur = m.cur[len(m.cur)-len(all(t, m.l)):]
 						}
