@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 
@@ -16,6 +17,7 @@ const (
 	NoBug Bug = iota
 	BugSendBeforePersist
 	BugForgetVote
+	BugEarlyAck
 )
 
 type Options struct {
@@ -24,6 +26,24 @@ type Options struct {
 	PreVote     bool
 	CheckQuorum bool
 	Bug         Bug
+	KV          bool
+}
+
+const kvKeys = 8
+
+type Op struct {
+	Kind    byte
+	Key     int
+	Value   string
+	Output  string
+	Call    int64
+	Return  int64
+	Unknown bool
+}
+
+type pendingOp struct {
+	Op
+	index, term uint64
 }
 
 const (
@@ -89,6 +109,7 @@ type envelope struct {
 
 type fsmState struct {
 	index, hash uint64
+	kv          [kvKeys]string
 }
 
 type node struct {
@@ -110,6 +131,7 @@ type node struct {
 	fsmDur   fsmState
 	snap     fsmState
 	recvSnap map[uint64]fsmState
+	pending  map[uint64]pendingOp
 
 	view      logView
 	commit    uint64
@@ -141,6 +163,8 @@ type Sim struct {
 	trace  trace
 
 	proposals uint64
+	history   []Op
+	abandoned []pendingOp
 	calm      bool
 	calmFrom  uint64
 	calmOK    bool
@@ -168,6 +192,7 @@ func New(opts Options) *Sim {
 			disk:     raft.NewMemoryStorage(s.conf),
 			skew:     0.8 + 0.4*s.rng.Float64(),
 			recvSnap: map[uint64]fsmState{},
+			pending:  map[uint64]pendingOp{},
 		}
 		s.nodes = append(s.nodes, n)
 		s.byID[id] = n
@@ -322,7 +347,44 @@ func (s *Sim) crash(n *node, torn bool) {
 	n.queue, n.batch, n.syncing = nil, nil, false
 	n.fsm = n.fsmDur
 	n.recvSnap = map[uint64]fsmState{}
+	s.abandon(n, ^uint64(0))
 	s.schedule(s.now+s.between(10*ms, second), evRestart, n)
+}
+
+func (s *Sim) abandon(n *node, upTo uint64) {
+	for _, i := range slices.Sorted(maps.Keys(n.pending)) {
+		if i > upTo {
+			break
+		}
+		if p := n.pending[i]; p.Kind != 'g' {
+			s.abandoned = append(s.abandoned, p)
+		}
+		delete(n.pending, i)
+	}
+}
+
+func (s *Sim) History() []Op {
+	out := slices.Clone(s.history)
+	unresolved := slices.Clone(s.abandoned)
+	for _, n := range s.nodes {
+		for _, i := range slices.Sorted(maps.Keys(n.pending)) {
+			if p := n.pending[i]; p.Kind != 'g' {
+				unresolved = append(unresolved, p)
+			}
+		}
+	}
+	for _, p := range unresolved {
+		switch t := at(s.chk.commitTerm, p.index); {
+		case t == p.term:
+			p.Return = int64(at(s.chk.commitAt, p.index))
+		case t != 0:
+			continue
+		default:
+			p.Unknown = true
+		}
+		out = append(out, p.Op)
+	}
+	return out
 }
 
 func (s *Sim) tornWrite(n *node) {
@@ -444,14 +506,45 @@ func (s *Sim) installSnapshot(n *node, snap raft.SnapshotMeta) {
 	}
 	s.chk.restored(n, st)
 	n.snap, n.fsm, n.fsmDur = st, st, st
+	s.abandon(n, snap.Index)
+}
+
+func decodeOp(data []byte) (kind byte, key int, value string, ok bool) {
+	if len(data) < 10 {
+		return 0, 0, "", false
+	}
+	return data[8], int(data[9]) % kvKeys, string(data[10:]), true
 }
 
 func (s *Sim) apply(n *node, ents []raft.Entry) {
 	for _, e := range ents {
 		s.chk.apply(n, e)
-		n.fsm = fsmState{index: e.Index, hash: mix(n.fsm.hash, e)}
-		if s.calm && e.Type == raft.EntryNormal && binary.BigEndian.Uint64(e.Data) >= s.calmFrom {
+		n.fsm.index, n.fsm.hash = e.Index, mix(n.fsm.hash, e)
+		if e.Type != raft.EntryNormal {
+			continue
+		}
+		if s.calm && binary.BigEndian.Uint64(e.Data) >= s.calmFrom {
 			s.calmOK = true
+		}
+		kind, key, value, ok := decodeOp(e.Data)
+		if !ok {
+			continue
+		}
+		output := n.fsm.kv[key]
+		switch kind {
+		case 'p':
+			n.fsm.kv[key] = value
+		case 'a':
+			n.fsm.kv[key] += value
+		}
+		p, mine := n.pending[e.Index]
+		if !mine {
+			continue
+		}
+		delete(n.pending, e.Index)
+		if e.Term == p.term {
+			p.Output, p.Return = output, s.now
+			s.history = append(s.history, p.Op)
 		}
 	}
 }
@@ -483,10 +576,33 @@ func (s *Sim) propose() {
 		return
 	}
 	data := binary.BigEndian.AppendUint64(nil, s.proposals)
-	if _, _, err := n.core.Propose(data); err == nil {
-		s.proposals++
-		s.process(n)
+	var op Op
+	if s.opts.KV {
+		op = Op{Key: s.rng.IntN(kvKeys), Call: s.now}
+		switch r := s.rng.IntN(10); {
+		case r < 5:
+			op.Kind = 'g'
+		case r < 7:
+			op.Kind, op.Value = 'p', fmt.Sprintf("%d;", s.proposals)
+		default:
+			op.Kind, op.Value = 'a', fmt.Sprintf("%d;", s.proposals)
+		}
+		data = append(append(data, op.Kind, byte(op.Key)), op.Value...)
 	}
+	index, term, err := n.core.Propose(data)
+	if err != nil {
+		return
+	}
+	s.proposals++
+	if s.opts.KV {
+		if s.opts.Bug == BugEarlyAck {
+			op.Output, op.Return = n.fsm.kv[op.Key], s.now
+			s.history = append(s.history, op)
+		} else {
+			n.pending[index] = pendingOp{Op: op, index: index, term: term}
+		}
+	}
+	s.process(n)
 }
 
 func (s *Sim) blocked(from, to *node) bool {

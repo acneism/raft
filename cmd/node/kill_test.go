@@ -116,10 +116,7 @@ func (h *harness) getJSON(addr, path string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-func TestKillCycles(t *testing.T) {
-	if *killCycles == 0 {
-		t.Skip("run with -kill.cycles=N")
-	}
+func newHarness(t *testing.T) *harness {
 	bin := *killBin
 	if bin == "" {
 		bin = buildBinary(t)
@@ -133,20 +130,38 @@ func TestKillCycles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer out.Close()
+		t.Cleanup(func() { out.Close() })
 		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], out: out})
 	}
 	h.peers = strings.Join(peers, ",")
 	for _, p := range h.procs {
 		h.start(p)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		for _, p := range h.procs {
 			if p.cmd != nil {
 				h.kill(p)
 			}
 		}
-	}()
+	})
+	return h
+}
+
+func (h *harness) nemesis(until time.Time) {
+	for time.Now().Before(until) {
+		time.Sleep(time.Duration(300+rand.IntN(1200)) * time.Millisecond)
+		victim := h.procs[rand.IntN(len(h.procs))]
+		h.kill(victim)
+		time.Sleep(time.Duration(100+rand.IntN(700)) * time.Millisecond)
+		h.start(victim)
+	}
+}
+
+func TestKillCycles(t *testing.T) {
+	if *killCycles == 0 {
+		t.Skip("run with -kill.cycles=N")
+	}
+	h := newHarness(t)
 
 	var acked sync.Map
 	var nAcked, nUnknown atomic.Int64

@@ -56,6 +56,12 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./sim -run 'TestSim$' -timeout 60m -args -sim.steps=1000000 -sim.seeds=16
+      - run: go test ./sim -run 'TestSimLinearizable' -timeout 60m -v -args -sim.lin.steps=1000000 -sim.seeds=16 -sim.lin.out=${{ runner.temp }}/porcupine
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: porcupine-sim
+          path: ${{ runner.temp }}/porcupine
 
   kill:
     runs-on: ubuntu-latest
@@ -66,6 +72,21 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./cmd/node -run TestKillCycles -timeout 30m -v -args -kill.cycles=30
+
+  linearizability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./cmd/node -run TestLinearizability -timeout 30m -v -args -lin.duration=60s -lin.out=${{ runner.temp }}/linearizability.html
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: porcupine-cluster
+          path: ${{ runner.temp }}/linearizability.html
 
   fuzz:
     runs-on: ubuntu-latest

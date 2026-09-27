@@ -151,7 +151,7 @@ func (c *cluster) write(key, value string) {
 	defer cancel()
 	for ctx.Err() == nil {
 		l := c.leader(10 * time.Second)
-		p, err := l.n.Propose(kvfsm.Command(key, value))
+		p, err := l.n.Propose(kvfsm.Put(key, value))
 		if err != nil {
 			continue
 		}
@@ -223,7 +223,7 @@ func TestConcurrentProposals(t *testing.T) {
 			defer cancel()
 			var last node.Proposal
 			for i := range 20 {
-				p, err := l.n.Propose(kvfsm.Command(fmt.Sprintf("w%d-%d", w, i), "x"))
+				p, err := l.n.Propose(kvfsm.Put(fmt.Sprintf("w%d-%d", w, i), "x"))
 				if err != nil {
 					errs <- err
 					return
@@ -287,7 +287,7 @@ func TestLeaderFailover(t *testing.T) {
 func TestWaitOutcomes(t *testing.T) {
 	c := newCluster(t, 3, nil)
 	l := c.leader(5 * time.Second)
-	p, err := l.n.Propose(kvfsm.Command("a", "1"))
+	p, err := l.n.Propose(kvfsm.Put("a", "1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestWaitOutcomes(t *testing.T) {
 			c.stop(id)
 		}
 	}
-	p2, err := l.n.Propose(kvfsm.Command("b", "2"))
+	p2, err := l.n.Propose(kvfsm.Put("b", "2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,7 @@ func TestProposeInRejectsOtherTerm(t *testing.T) {
 	if _, err := l.n.ProposeIn(term+1, nil); !errors.Is(err, node.ErrNotLeader) {
 		t.Fatalf("proposal for a future term: %v", err)
 	}
-	p, err := l.n.ProposeIn(term, kvfsm.Command("k", "v"))
+	p, err := l.n.ProposeIn(term, kvfsm.Put("k", "v"))
 	if err != nil || p.Term != term {
 		t.Fatalf("proposal in the current term: %+v, %v", p, err)
 	}

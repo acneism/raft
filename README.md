@@ -19,7 +19,8 @@ go get github.com/acneism/raft
 - **Node.** `Propose` returns the index and term without waiting for IO, `Wait` always completes, leadership events
   are never lost, and replay after a restart starts at the state machine's durable index.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety
-  invariants after every step.
+  invariants after every step and the client history for linearizability with
+  [Porcupine](https://github.com/anishathalye/porcupine).
 
 ## Usage
 
@@ -67,11 +68,12 @@ A key-value node over HTTP. Run a three-node cluster in one process:
 ```bash
 go run ./cmd/node --all --peers 1=127.0.0.1:8001,2=127.0.0.1:8002,3=127.0.0.1:8003
 curl -X PUT http://localhost:9001/kv/greeting -d 'hello'
-curl http://localhost:9001/kv/greeting
+curl -X POST http://localhost:9001/kv/greeting/append -d ', world'
+curl 'http://localhost:9001/kv/greeting?consistent=1'
 ```
 
 Or one node per process: the same `--peers` everywhere and `--id 1`, `--id 2`, `--id 3`. The HTTP API listens on the
-Raft port plus 1000.
+Raft port plus 1000. A plain `GET` reads the local state machine; `?consistent=1` reads through the log.
 
 ## Testing
 
@@ -79,6 +81,8 @@ Raft port plus 1000.
 go test ./...
 go test ./sim -run TestSim$ -timeout 60m -args -sim.steps=10000000 -sim.seeds=8
 go test ./cmd/node -run TestKillCycles -timeout 60m -args -kill.cycles=200
+go test ./sim -run TestSimLinearizable$ -timeout 60m -args -sim.lin.steps=10000000 -sim.seeds=8
+go test ./cmd/node -run TestLinearizability -timeout 60m -args -lin.duration=5m
 ```
 
 ## License

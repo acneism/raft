@@ -2,7 +2,6 @@ package kvfsm
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -32,6 +31,8 @@ type FSM struct {
 	f         *os.File
 	w         *bufio.Writer
 	data      map[string]string
+	results   map[uint64]result
+	order     []uint64
 	applied   uint64
 	durable   uint64
 	syncEvery int
@@ -44,7 +45,7 @@ func Open(dir string, syncEvery int) (*FSM, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	s := &FSM{dir: dir, data: map[string]string{}, syncEvery: max(1, syncEvery)}
+	s := &FSM{dir: dir, data: map[string]string{}, results: map[uint64]result{}, syncEvery: max(1, syncEvery)}
 	path := filepath.Join(dir, "fsm.log")
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -104,7 +105,7 @@ func (s *FSM) replay(typ byte, p []byte) error {
 		if len(p) < 8 {
 			return errors.New("kvfsm: short record")
 		}
-		s.applyCommand(p[8:])
+		s.applyCommand(binary.LittleEndian.Uint64(p), p[8:])
 		s.applied = binary.LittleEndian.Uint64(p)
 	case recState:
 		idx, data, err := decodeState(p)
@@ -126,12 +127,63 @@ func record(typ byte, p []byte) []byte {
 	return append(b, p...)
 }
 
-func Command(key, value string) []byte { return []byte(key + "\x00" + value) }
+const (
+	opPut byte = iota + 1
+	opAppend
+	opGet
+)
 
-func (s *FSM) applyCommand(cmd []byte) {
-	if k, v, ok := bytes.Cut(cmd, []byte{0}); ok {
-		s.data[string(k)] = string(v)
+const maxResults = 8192
+
+type result struct {
+	value string
+	ok    bool
+}
+
+func encode(op byte, key, value string) []byte {
+	b := binary.AppendUvarint([]byte{op}, uint64(len(key)))
+	b = append(b, key...)
+	return append(b, value...)
+}
+
+func Put(key, value string) []byte { return encode(opPut, key, value) }
+
+func Append(key, value string) []byte { return encode(opAppend, key, value) }
+
+func Get(key string) []byte { return encode(opGet, key, "") }
+
+func (s *FSM) applyCommand(index uint64, cmd []byte) {
+	if len(cmd) < 2 {
+		return
 	}
+	n, k := binary.Uvarint(cmd[1:])
+	if k <= 0 || uint64(len(cmd)-1-k) < n {
+		return
+	}
+	key := string(cmd[1+k : 1+k+int(n)])
+	value := string(cmd[1+k+int(n):])
+	switch cmd[0] {
+	case opPut:
+		s.data[key] = value
+	case opAppend:
+		s.data[key] += value
+	case opGet:
+		v, ok := s.data[key]
+		s.results[index] = result{value: v, ok: ok}
+		s.order = append(s.order, index)
+		if len(s.order) > maxResults {
+			delete(s.results, s.order[0])
+			s.order = s.order[1:]
+		}
+	}
+}
+
+func (s *FSM) Result(index uint64) (value string, exists, found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, found := s.results[index]
+	delete(s.results, index)
+	return r.value, r.ok, found
 }
 
 func (s *FSM) Apply(ents []raft.Entry) error {
@@ -149,7 +201,7 @@ func (s *FSM) Apply(ents []raft.Entry) error {
 		if _, err := s.w.Write(record(recEntry, append(p, cmd...))); err != nil {
 			return err
 		}
-		s.applyCommand(cmd)
+		s.applyCommand(e.Index, cmd)
 		s.applied = e.Index
 		s.applies++
 	}

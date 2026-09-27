@@ -160,6 +160,7 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 	mux.HandleFunc("GET /digest", s.digest)
 	mux.HandleFunc("GET /kv/{key}", s.get)
 	mux.HandleFunc("PUT /kv/{key}", s.put)
+	mux.HandleFunc("POST /kv/{key}/append", s.append)
 	s.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -202,35 +203,63 @@ func (s *server) digest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"applied": applied, "digest": fmt.Sprintf("%016x", digest), "keys": s.fsm.Len()})
 }
 
-func (s *server) get(w http.ResponseWriter, r *http.Request) {
-	v, ok := s.fsm.Get(r.PathValue("key"))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	io.WriteString(w, v)
-}
-
-func (s *server) put(w http.ResponseWriter, r *http.Request) {
-	value, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	p, err := s.n.Propose(kvfsm.Command(r.PathValue("key"), string(value)))
+func (s *server) replicate(w http.ResponseWriter, r *http.Request, cmd []byte) (node.Proposal, bool) {
+	p, err := s.n.Propose(cmd)
 	if err != nil {
 		w.Header().Set("X-Raft-Leader", string(s.n.Status().Lead))
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
+		return p, false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	switch err := s.n.Wait(ctx, p); {
 	case err == nil:
-		w.WriteHeader(http.StatusNoContent)
+		return p, true
 	case errors.Is(err, node.ErrLost):
 		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)
 	}
+	return p, false
 }
+
+func (s *server) get(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if !r.URL.Query().Has("consistent") {
+		v, ok := s.fsm.Get(key)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, v)
+		return
+	}
+	p, ok := s.replicate(w, r, kvfsm.Get(key))
+	if !ok {
+		return
+	}
+	v, exists, found := s.fsm.Result(p.Index)
+	switch {
+	case !found:
+		http.Error(w, "read result evicted", http.StatusInternalServerError)
+	case !exists:
+		http.NotFound(w, r)
+	default:
+		io.WriteString(w, v)
+	}
+}
+
+func (s *server) write(w http.ResponseWriter, r *http.Request, cmd func(key, value string) []byte) {
+	value, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, ok := s.replicate(w, r, cmd(r.PathValue("key"), string(value))); ok {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *server) put(w http.ResponseWriter, r *http.Request) { s.write(w, r, kvfsm.Put) }
+
+func (s *server) append(w http.ResponseWriter, r *http.Request) { s.write(w, r, kvfsm.Append) }

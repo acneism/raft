@@ -126,7 +126,7 @@ func measureRounds(t *testing.T, mode roundMode, writers, n int) (dist, float64)
 			ctx := context.Background()
 			for i := range n / writers {
 				begin := time.Now()
-				p, err := l.n.Propose(kvfsm.Command(fmt.Sprintf("w%d-%d", w, i), "value"))
+				p, err := l.n.Propose(kvfsm.Put(fmt.Sprintf("w%d-%d", w, i), "value"))
 				if err == nil {
 					err = l.n.Wait(ctx, p)
 				}

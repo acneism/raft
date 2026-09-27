@@ -14,6 +14,7 @@ type checker struct {
 	entries    map[entryKey]entryInfo
 	commitTerm []uint64
 	commitObs  []uint64
+	commitAt   []uint64
 	states     []uint64
 	maxCommit  uint64
 }
@@ -113,6 +114,7 @@ func (c *checker) committed(n *node, lo, hi, term uint64) {
 		}
 		c.commitTerm = set(c.commitTerm, i, t)
 		c.commitObs = set(c.commitObs, i, term)
+		c.commitAt = set(c.commitAt, i, uint64(c.s.now))
 		c.maxCommit = max(c.maxCommit, i)
 		if !c.durableOnQuorum(i, t) {
 			c.s.fail("%s commits (%d, %d) that is not on the disks of a quorum", n.id, i, t)
