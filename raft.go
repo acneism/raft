@@ -315,8 +315,9 @@ func (c *Core) send(m Message) {
 	if m.Term == 0 {
 		m.Term = c.term
 	}
-	early := c.state == StateLeader && c.durableTerm == c.term &&
-		(m.Type == MsgApp || m.Type == MsgHeartbeat || m.Type == MsgSnap)
+	early := m.Type == MsgHeartbeatResp ||
+		c.state == StateLeader && c.durableTerm == c.term &&
+			(m.Type == MsgApp || m.Type == MsgHeartbeat || m.Type == MsgSnap)
 	if early {
 		c.msgs = append(c.msgs, m)
 	} else {

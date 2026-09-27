@@ -18,10 +18,11 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go vet ./...
       - if: runner.os == 'Linux'
         run: go test -race -timeout 30m ./...
@@ -31,10 +32,11 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
@@ -48,28 +50,31 @@ jobs:
   simulation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go test ./sim -run 'TestSim$' -timeout 60m -args -sim.steps=1000000 -sim.seeds=16
 
   kill:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go test ./cmd/node -run TestKillCycles -timeout 30m -v -args -kill.cycles=30
 
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: |
           for f in FuzzDecodeMessage FuzzDecodeBatch FuzzDecodeOffer FuzzReadFrame; do
             go test ./transport -run '^$' -fuzz "^$f\$" -fuzztime 20s

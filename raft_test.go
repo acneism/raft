@@ -747,3 +747,14 @@ func TestPreVoteTieBreak(t *testing.T) {
 			n1.state, n1.term, n2.state, n2.term)
 	}
 }
+
+func TestHeartbeatResponseDoesNotWaitForDisk(t *testing.T) {
+	nw := newNetwork(t, 3)
+	nw.campaign("1")
+	f := nw.nodes["2"].core
+	f.Step(Message{Type: MsgHeartbeat, From: "1", To: "2", Term: 1, Commit: 1})
+	rd := f.Ready()
+	if len(rd.Messages) != 1 || rd.Messages[0].Type != MsgHeartbeatResp || len(rd.MessagesAfterPersist) != 0 {
+		t.Fatalf("heartbeat response held back: %+v / %+v", rd.Messages, rd.MessagesAfterPersist)
+	}
+}
