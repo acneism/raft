@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/acneism/raft"
@@ -50,19 +51,6 @@ func Manifest(dir string) ([]SnapshotFile, error) {
 		return nil
 	})
 	return out, err
-}
-
-func fileCRC(path string) (uint32, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	h := crc32.New(castagnoli)
-	if _, err := io.Copy(h, f); err != nil {
-		return 0, err
-	}
-	return h.Sum32(), nil
 }
 
 func validName(name string) bool {
@@ -306,44 +294,60 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 	if err := w.Flush(); err != nil {
 		return "", err
 	}
-	for done := false; !done; {
-		c.SetReadDeadline(time.Now().Add(t.cfg.IOTimeout))
-		typ, p, err := readFrame(r)
-		if err != nil {
-			return "", err
-		}
-		switch typ {
-		case frameSnapDone:
-			done = true
-		case frameSnapChunk:
-			d := decoder{b: p}
-			i, off := d.uvarint(), int64(d.uvarint())
-			if d.err != nil || i >= uint64(len(files)) || off != next[i] || off+int64(len(d.b)) > files[i].Size {
-				return "", errors.New("transport: unexpected snapshot chunk")
-			}
-			if _, err := fhs[i].WriteAt(d.b, off); err != nil {
+	crcs := make([]uint32, len(files))
+	for i := range files {
+		if next[i] > 0 {
+			h := crc32.New(castagnoli)
+			if _, err := io.Copy(h, io.NewSectionReader(fhs[i], 0, next[i])); err != nil {
 				return "", err
 			}
-			next[i] += int64(len(d.b))
-		default:
-			return "", fmt.Errorf("transport: unexpected frame %d during snapshot", typ)
+			crcs[i] = h.Sum32()
 		}
+	}
+	fw := newFileWriter(fhs)
+	err = func() error {
+		for {
+			c.SetReadDeadline(time.Now().Add(t.cfg.IOTimeout))
+			typ, p, err := readFrame(r)
+			if err != nil {
+				return err
+			}
+			switch typ {
+			case frameSnapDone:
+				return nil
+			case frameSnapChunk:
+				d := decoder{b: p}
+				i, off := d.uvarint(), int64(d.uvarint())
+				if d.err != nil || i >= uint64(len(files)) || off != next[i] || off+int64(len(d.b)) > files[i].Size {
+					return errors.New("transport: unexpected snapshot chunk")
+				}
+				crcs[i] = crc32.Update(crcs[i], castagnoli, d.b)
+				if err := fw.write(int(i), off, d.b); err != nil {
+					return err
+				}
+				next[i] += int64(len(d.b))
+			default:
+				return fmt.Errorf("transport: unexpected frame %d during snapshot", typ)
+			}
+		}
+	}()
+	if werr := fw.close(); werr != nil {
+		err = werr
+	}
+	if err != nil {
+		return "", err
 	}
 	c.SetDeadline(time.Time{})
 	for i, f := range files {
 		if next[i] != f.Size {
 			return "", fmt.Errorf("transport: %s incomplete: %d of %d bytes", f.Name, next[i], f.Size)
 		}
-		if err := fhs[i].Sync(); err != nil {
-			return "", err
-		}
-		crc, err := fileCRC(filepath.Join(dir, filepath.FromSlash(f.Name)))
-		if err != nil {
-			return "", err
-		}
-		if crc != f.CRC {
+		if crcs[i] != f.CRC {
 			fhs[i].Truncate(0)
 			return "", fmt.Errorf("transport: %s checksum mismatch", f.Name)
+		}
+		if err := fhs[i].Sync(); err != nil {
+			return "", err
 		}
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
@@ -352,4 +356,58 @@ func (t *Transport) receiveFiles(c net.Conn, r *bufio.Reader, w *bufio.Writer, s
 		}
 	}
 	return dir, nil
+}
+
+const syncEvery = 32 << 20
+
+type fileChunk struct {
+	i   int
+	off int64
+	b   []byte
+}
+
+type fileWriter struct {
+	fhs    []*os.File
+	chunks chan fileChunk
+	done   chan error
+	failed atomic.Bool
+}
+
+func newFileWriter(fhs []*os.File) *fileWriter {
+	w := &fileWriter{fhs: fhs, chunks: make(chan fileChunk, 16), done: make(chan error, 1)}
+	go w.run()
+	return w
+}
+
+func (w *fileWriter) run() {
+	var err error
+	unsynced := make([]int64, len(w.fhs))
+	for ch := range w.chunks {
+		if err != nil {
+			continue
+		}
+		if _, err = w.fhs[ch.i].WriteAt(ch.b, ch.off); err == nil {
+			if unsynced[ch.i] += int64(len(ch.b)); unsynced[ch.i] >= syncEvery {
+				unsynced[ch.i] = 0
+				err = w.fhs[ch.i].Sync()
+			}
+		}
+		if err != nil {
+			w.failed.Store(true)
+		}
+	}
+	w.done <- err
+}
+
+func (w *fileWriter) write(i int, off int64, b []byte) error {
+	if w.failed.Load() {
+		return errors.New("transport: writing snapshot files failed")
+	}
+	w.chunks <- fileChunk{i: i, off: off, b: b}
+	return nil
+}
+
+func (w *fileWriter) close() error {
+	close(w.chunks)
+	return <-w.done
 }

@@ -107,7 +107,7 @@ func testPKI(t *testing.T, ids ...string) map[string]*tls.Config {
 	caTmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "raft test ca"},
-		NotBefore:             now.Add(-time.Hour),
+		NotBefore:             now.Add(-24 * time.Hour),
 		NotAfter:              now.Add(24 * time.Hour),
 		IsCA:                  true,
 		KeyUsage:              x509.KeyUsageCertSign,
@@ -127,7 +127,7 @@ func testPKI(t *testing.T, ids ...string) map[string]*tls.Config {
 			SerialNumber: big.NewInt(int64(i + 2)),
 			Subject:      pkix.Name{CommonName: id},
 			DNSNames:     []string{id},
-			NotBefore:    now.Add(-time.Hour),
+			NotBefore:    now.Add(-24 * time.Hour),
 			NotAfter:     now.Add(24 * time.Hour),
 			KeyUsage:     x509.KeyUsageDigitalSignature,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},

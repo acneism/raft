@@ -88,6 +88,16 @@ jobs:
           name: porcupine-cluster
           path: ${{ runner.temp }}/linearizability.html
 
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./transport -run TestSnapshotThroughput -timeout 10m -v -args -snap.size=268435456
+
   fuzz:
     runs-on: ubuntu-latest
     steps:
