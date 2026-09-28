@@ -107,7 +107,7 @@ func TestLinearizability(t *testing.T) {
 	}
 	h := newHarness(t)
 	h.linearizability(*linDuration, h.nemesis)
-	t.Logf("%d of %d leadership transfers done", h.transferred, h.transfers)
+	t.Logf("%d of %d leadership transfers done, %d partitions", h.transferred, h.transfers, h.partitions)
 }
 
 func (h *harness) linearizability(d time.Duration, nemesis func(until time.Time)) {

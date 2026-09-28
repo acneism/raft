@@ -92,18 +92,19 @@ func (h *harness) addMember(stats *membershipStats) {
 	h.mu.Lock()
 	id := len(h.procs) + 1
 	h.mu.Unlock()
-	peers = append(peers, fmt.Sprintf("%d=%s", id, ports[0]))
+	advertised := h.net.listen(h.t, fmt.Sprint(id), ports[0])
+	peers = append(peers, fmt.Sprintf("%d=%s", id, advertised))
 	out, err := os.Create(filepath.Join(h.dir, fmt.Sprintf("node%d.log", id)))
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.t.Cleanup(func() { out.Close() })
-	p := &proc{id: id, http: ports[1], raft: ports[0], peers: strings.Join(peers, ","), join: true, out: out}
+	p := &proc{id: id, http: ports[1], raft: advertised, listen: ports[0], peers: strings.Join(peers, ","), join: true, out: out}
 	h.start(p)
 	h.mu.Lock()
 	h.procs = append(h.procs, p)
 	h.mu.Unlock()
-	if h.changeMembers(http.MethodPost, fmt.Sprintf("/members/%d?addr=%s", id, ports[0])) &&
+	if h.changeMembers(http.MethodPost, fmt.Sprintf("/members/%d?addr=%s", id, advertised)) &&
 		h.changeMembers(http.MethodPost, fmt.Sprintf("/members/%d/promote", id)) {
 		stats.added++
 		return

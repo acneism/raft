@@ -29,6 +29,7 @@ import (
 type options struct {
 	dir        string
 	httpAddr   string
+	listen     string
 	httpOffset int
 	election   time.Duration
 	noSync     bool
@@ -44,6 +45,7 @@ func main() {
 	var o options
 	flag.StringVar(&o.dir, "dir", "data", "data directory")
 	flag.StringVar(&o.httpAddr, "http", "", "HTTP API address of a single node (default: Raft port + http-offset)")
+	flag.StringVar(&o.listen, "listen", "", "address the Raft transport of a single node listens on (default: its address in --peers)")
 	flag.IntVar(&o.httpOffset, "http-offset", 1000, "HTTP API port offset from the Raft port")
 	flag.DurationVar(&o.election, "election-timeout", time.Second, "Raft election timeout; followers wait 1-2 of it before campaigning")
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
@@ -68,8 +70,8 @@ func main() {
 		}
 		ids = []raft.NodeID{raft.NodeID(*nodeID)}
 	}
-	if len(ids) > 1 && o.httpAddr != "" {
-		fail("--http needs a single node; use --http-offset with --all")
+	if len(ids) > 1 && (o.httpAddr != "" || o.listen != "") {
+		fail("--http and --listen need a single node; use --http-offset with --all")
 	}
 
 	var servers []*server
@@ -140,6 +142,7 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 	n, err := node.Open(node.Config{
 		ID:            id,
 		Dir:           filepath.Join(dir, "raft"),
+		Listen:        o.listen,
 		Peers:         peers,
 		StateMachine:  fsm,
 		TickInterval:  o.election / 100,

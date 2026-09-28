@@ -32,6 +32,7 @@ type proc struct {
 	id      int
 	http    string
 	raft    string
+	listen  string
 	peers   string
 	join    bool
 	removed bool
@@ -48,6 +49,8 @@ type harness struct {
 	mu                     sync.Mutex
 	hc                     *http.Client
 	transfers, transferred int
+	net                    *linkProxy
+	partitions             int
 }
 
 func freePorts(t *testing.T, n int) []string {
@@ -90,6 +93,9 @@ func (h *harness) start(p *proc) {
 		peers = p.peers
 	}
 	args := []string{"--id", fmt.Sprint(p.id), "--peers", peers, "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
+	if p.listen != "" {
+		args = append(args, "--listen", p.listen)
+	}
 	if *killNoSync {
 		args = append(args, "--unsafe-no-fsync")
 	}
@@ -137,17 +143,18 @@ func newHarness(t *testing.T) *harness {
 	if bin == "" {
 		bin = buildBinary(t)
 	}
-	h := &harness{t: t, bin: bin, dir: t.TempDir(), hc: &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
+	h := &harness{t: t, bin: bin, dir: t.TempDir(), net: newLinkProxy(t), hc: &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	addrs := freePorts(t, 6)
 	var peers []string
 	for i := range 3 {
-		peers = append(peers, fmt.Sprintf("%d=%s", i+1, addrs[i]))
+		advertised := h.net.listen(t, fmt.Sprint(i+1), addrs[i])
+		peers = append(peers, fmt.Sprintf("%d=%s", i+1, advertised))
 		out, err := os.Create(filepath.Join(h.dir, fmt.Sprintf("node%d.log", i+1)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { out.Close() })
-		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], raft: addrs[i], out: out})
+		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], raft: advertised, listen: addrs[i], out: out})
 	}
 	h.peers = strings.Join(peers, ",")
 	for _, p := range h.procs {
@@ -193,8 +200,15 @@ func (h *harness) transfer() {
 func (h *harness) nemesis(until time.Time) {
 	for time.Now().Before(until) {
 		time.Sleep(time.Duration(300+rand.IntN(1200)) * time.Millisecond)
-		if rand.IntN(2) == 0 {
+		switch rand.IntN(4) {
+		case 0:
 			h.transfer()
+			continue
+		case 1:
+			h.partition()
+			continue
+		case 2:
+			h.net.heal()
 			continue
 		}
 		victim := h.procs[rand.IntN(len(h.procs))]
@@ -202,6 +216,7 @@ func (h *harness) nemesis(until time.Time) {
 		time.Sleep(time.Duration(100+rand.IntN(700)) * time.Millisecond)
 		h.start(victim)
 	}
+	h.net.heal()
 }
 
 func TestKillCycles(t *testing.T) {
@@ -337,4 +352,27 @@ func (h *harness) httpOf(id string) string {
 		}
 	}
 	return ""
+}
+
+func (h *harness) partition() {
+	h.partitions++
+	var ids []string
+	for _, p := range h.live() {
+		ids = append(ids, fmt.Sprint(p.id))
+	}
+	if rand.IntN(2) == 0 {
+		x := ids[rand.IntN(len(ids))]
+		for _, y := range ids {
+			if y != x {
+				h.net.block(x, y)
+				h.net.block(y, x)
+			}
+		}
+		return
+	}
+	for range 1 + rand.IntN(3) {
+		if a, b := ids[rand.IntN(len(ids))], ids[rand.IntN(len(ids))]; a != b {
+			h.net.block(a, b)
+		}
+	}
 }
