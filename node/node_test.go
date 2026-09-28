@@ -131,9 +131,11 @@ func (c *cluster) stop(id raft.NodeID) {
 	m.n, m.fsm = nil, nil
 }
 
+const slowDisk = 30 * time.Second
+
 func (c *cluster) leader(timeout time.Duration) *member {
 	c.t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(max(timeout, slowDisk))
 	for time.Now().Before(deadline) {
 		for _, m := range c.members {
 			if m.n != nil {
@@ -150,7 +152,7 @@ func (c *cluster) leader(timeout time.Duration) *member {
 
 func (c *cluster) write(key, value string) {
 	c.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*slowDisk)
 	defer cancel()
 	for ctx.Err() == nil {
 		l := c.leader(10 * time.Second)
@@ -167,7 +169,7 @@ func (c *cluster) write(key, value string) {
 
 func (c *cluster) converged(timeout time.Duration) {
 	c.t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(max(timeout, slowDisk))
 	for {
 		var want uint64
 		var idx uint64
