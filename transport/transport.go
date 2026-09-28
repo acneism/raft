@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/acneism/raft"
@@ -132,6 +133,11 @@ func (t *Transport) Send(msgs []raft.Message) {
 }
 
 func (t *Transport) dial(id raft.NodeID, addr string, kind byte) (net.Conn, *bufio.Reader, *bufio.Writer, error) {
+	c, r, w, _, err := t.dialVersion(id, addr, kind)
+	return c, r, w, err
+}
+
+func (t *Transport) dialVersion(id raft.NodeID, addr string, kind byte) (net.Conn, *bufio.Reader, *bufio.Writer, uint64, error) {
 	d := net.Dialer{Timeout: t.cfg.DialTimeout, KeepAlive: 15 * time.Second}
 	var c net.Conn
 	var err error
@@ -143,21 +149,37 @@ func (t *Transport) dial(id raft.NodeID, addr string, kind byte) (net.Conn, *buf
 		c, err = d.Dial("tcp", addr)
 	}
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 	if !t.track(c) {
-		return nil, nil, nil, ErrClosed
+		return nil, nil, nil, 0, ErrClosed
 	}
 	w := bufio.NewWriterSize(c, 64<<10)
 	c.SetWriteDeadline(time.Now().Add(t.cfg.IOTimeout))
-	if err := writeFrame(w, frameHello, hello{kind: kind, from: string(t.cfg.ID), to: string(id)}.encode()); err == nil {
+	h := hello{kind: kind, from: string(t.cfg.ID), to: string(id)}
+	if kind == streamMessages {
+		h.max = protocolVersion
+	}
+	if err := writeFrame(w, frameHello, h.encode()); err == nil {
 		err = w.Flush()
 	}
 	if err != nil {
 		t.untrack(c)
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
-	return c, bufio.NewReaderSize(c, 64<<10), w, nil
+	r := bufio.NewReaderSize(c, 64<<10)
+	v := uint64(1)
+	if kind == streamMessages {
+		c.SetReadDeadline(time.Now().Add(min(t.cfg.IOTimeout, versionWait)))
+		if typ, p, err := readFrame(r); err == nil && typ == frameVersion {
+			d := decoder{b: p}
+			if x := d.uvarint(); d.err == nil && x >= 1 {
+				v = x
+			}
+		}
+		c.SetReadDeadline(time.Time{})
+	}
+	return c, r, w, v, nil
 }
 
 func (t *Transport) accept() {
@@ -199,6 +221,12 @@ func (t *Transport) serve(c net.Conn) {
 	}
 	if t.peer(from) == nil {
 		return
+	}
+	if h.kind == streamMessages && h.max > 0 {
+		w := bufio.NewWriterSize(c, 64)
+		if writeFrame(w, frameVersion, appendUvarint(nil, min(h.max, protocolVersion))) != nil || w.Flush() != nil {
+			return
+		}
 	}
 	c.SetDeadline(time.Time{})
 	switch h.kind {
@@ -243,17 +271,18 @@ func Identity(cs tls.ConnectionState) (raft.NodeID, error) {
 }
 
 type peer struct {
-	t      *Transport
-	id     raft.NodeID
-	addr   string
-	mu     sync.Mutex
-	queue  []raft.Message
-	bytes  int64
-	hb     int
-	hbResp int
-	spare  []raft.Message
-	notify chan struct{}
-	stop   chan struct{}
+	t       *Transport
+	id      raft.NodeID
+	addr    string
+	mu      sync.Mutex
+	queue   []raft.Message
+	bytes   int64
+	hb      int
+	hbResp  int
+	spare   []raft.Message
+	notify  chan struct{}
+	stop    chan struct{}
+	version atomic.Uint64
 }
 
 func msgSize(m *raft.Message) int64 {
@@ -325,7 +354,7 @@ func (p *peer) run() {
 	defer p.t.wg.Done()
 	backoff := 20 * time.Millisecond
 	for {
-		c, _, w, err := p.t.dial(p.id, p.address(), streamMessages)
+		c, _, w, v, err := p.t.dialVersion(p.id, p.address(), streamMessages)
 		if err != nil {
 			p.drop(p.take())
 			select {
@@ -338,6 +367,7 @@ func (p *peer) run() {
 			backoff = min(2*backoff, time.Second)
 			continue
 		}
+		p.version.Store(v)
 		backoff = 20 * time.Millisecond
 		err = p.stream(c, w)
 		p.t.untrack(c)

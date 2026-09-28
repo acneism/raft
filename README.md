@@ -15,7 +15,8 @@ go get github.com/acneism/raft
 - **Parallel leader fsync.** AppendEntries leave before the leader's own fsync, so a round takes the longer of the
   two fsyncs, not their sum.
 - **Segmented log.** CRC-chained records, logical compaction to any index, crash-safe HardState; Linux and Windows.
-- **Transport.** Framed TCP with a binary codec, mutual TLS, resumable snapshot transfer.
+- **Transport.** Framed TCP with a binary codec, mutual TLS, resumable snapshot transfer; peers negotiate the protocol
+  version, so a cluster can be upgraded one node at a time.
 - **Node.** `Propose` returns the index and term without waiting for IO, `Wait` always completes, leadership events
   are never lost, and replay after a restart starts at the state machine's durable index.
 - **Snapshots on demand.** The log is compacted behind the state machine's durable index without a snapshot; a

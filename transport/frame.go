@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"time"
 )
 
 const (
@@ -17,12 +18,15 @@ const (
 	frameSnapChunk
 	frameSnapDone
 	frameSnapResult
+	frameVersion
 )
 
 const (
-	frameHeader = 9
-	maxFrame    = 64 << 20
-	version     = 1
+	frameHeader     = 9
+	maxFrame        = 64 << 20
+	versionWait     = time.Second
+	helloVersion    = 1
+	protocolVersion = 1
 )
 
 const (
@@ -81,19 +85,27 @@ func expectFrame(r *bufio.Reader, typ byte) ([]byte, error) {
 type hello struct {
 	kind     byte
 	from, to string
+	max      uint64
 }
 
 func (h hello) encode() []byte {
-	b := []byte{version, h.kind}
+	b := []byte{helloVersion, h.kind}
 	b = appendString(b, h.from)
-	return appendString(b, h.to)
+	b = appendString(b, h.to)
+	if h.max == 0 {
+		return b
+	}
+	return appendUvarint(b, h.max)
 }
 
 func decodeHello(p []byte) (hello, error) {
 	d := decoder{b: p}
-	if d.byte() != version {
+	if d.byte() != helloVersion {
 		return hello{}, fmt.Errorf("transport: unsupported protocol version")
 	}
 	h := hello{kind: d.byte(), from: d.string(), to: d.string()}
+	if d.err == nil && len(d.b) > 0 {
+		h.max = d.uvarint()
+	}
 	return h, d.err
 }
