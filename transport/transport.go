@@ -253,6 +253,7 @@ type peer struct {
 	hbResp int
 	spare  []raft.Message
 	notify chan struct{}
+	stop   chan struct{}
 }
 
 func msgSize(m *raft.Message) int64 {
@@ -330,6 +331,8 @@ func (p *peer) run() {
 			select {
 			case <-p.t.done:
 				return
+			case <-p.stop:
+				return
 			case <-time.After(backoff/2 + rand.N(backoff)):
 			}
 			backoff = min(2*backoff, time.Second)
@@ -344,6 +347,8 @@ func (p *peer) run() {
 		select {
 		case <-p.t.done:
 			return
+		case <-p.stop:
+			return
 		case <-time.After(backoff):
 		}
 	}
@@ -354,6 +359,8 @@ func (p *peer) stream(c net.Conn, w *bufio.Writer) error {
 	for {
 		select {
 		case <-p.t.done:
+			return ErrClosed
+		case <-p.stop:
 			return ErrClosed
 		case <-p.notify:
 		}
@@ -392,10 +399,19 @@ func (t *Transport) AddPeer(id raft.NodeID, addr string) {
 		return
 	default:
 	}
-	p := &peer{t: t, id: id, addr: addr, notify: make(chan struct{}, 1), hb: -1, hbResp: -1}
+	p := &peer{t: t, id: id, addr: addr, notify: make(chan struct{}, 1), stop: make(chan struct{}), hb: -1, hbResp: -1}
 	t.peers[id] = p
 	t.wg.Add(1)
 	go p.run()
+}
+
+func (t *Transport) RemovePeer(id raft.NodeID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p := t.peers[id]; p != nil {
+		delete(t.peers, id)
+		close(p.stop)
+	}
 }
 
 func (t *Transport) peer(id raft.NodeID) *peer {

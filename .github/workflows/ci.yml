@@ -82,11 +82,12 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test ./cmd/node -run TestLinearizability -timeout 30m -v -args -lin.duration=60s -lin.out=${{ runner.temp }}/linearizability.html
+      - run: go test ./cmd/node -run TestMembership -timeout 30m -v -args -member.duration=60s -lin.out=${{ runner.temp }}/membership.html
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: porcupine-cluster
-          path: ${{ runner.temp }}/linearizability.html
+          path: ${{ runner.temp }}/*.html
 
   snapshot:
     runs-on: ubuntu-latest

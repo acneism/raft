@@ -106,9 +106,15 @@ func TestLinearizability(t *testing.T) {
 		t.Skip("run with -lin.duration=D")
 	}
 	h := newHarness(t)
+	h.linearizability(*linDuration, h.nemesis)
+	t.Logf("%d of %d leadership transfers done", h.transferred, h.transfers)
+}
+
+func (h *harness) linearizability(d time.Duration, nemesis func(until time.Time)) {
+	t := h.t
 	start := time.Now()
 	now := func() int64 { return int64(time.Since(start)) }
-	deadline := start.Add(*linDuration)
+	deadline := start.Add(d)
 	var mu sync.Mutex
 	var history []porcupine.Operation
 	var clients, acked, unknown atomic.Int64
@@ -123,7 +129,7 @@ func TestLinearizability(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			client := int(clients.Add(1) - 1)
-			target := h.procs[rand.IntN(len(h.procs))].http
+			target := h.pick()
 			for seq := 0; time.Now().Before(deadline); seq++ {
 				in := kvInput{key: fmt.Sprintf("k%d", rand.IntN(50))}
 				switch r := rand.IntN(10); {
@@ -148,11 +154,9 @@ func TestLinearizability(t *testing.T) {
 					record(porcupine.Operation{ClientId: client, Input: in, Call: call, Output: kvOutput{}, Return: ret})
 					acked.Add(1)
 				case code == http.StatusServiceUnavailable || code == http.StatusConflict:
-					target = h.procs[rand.IntN(len(h.procs))].http
-					for _, p := range h.procs {
-						if fmt.Sprint(p.id) == leader {
-							target = p.http
-						}
+					target = h.pick()
+					if addr := h.httpOf(leader); addr != "" {
+						target = addr
 					}
 					if leader == "" {
 						time.Sleep(20 * time.Millisecond)
@@ -163,18 +167,18 @@ func TestLinearizability(t *testing.T) {
 						unknown.Add(1)
 						client = int(clients.Add(1) - 1)
 					}
-					target = h.procs[rand.IntN(len(h.procs))].http
+					target = h.pick()
 				}
 			}
 		}()
 	}
-	h.nemesis(deadline)
+	nemesis(deadline)
 	wg.Wait()
 
 	checkStart := time.Now()
 	res, info := porcupine.CheckOperationsVerbose(kvModel, history, 5*time.Minute)
 
-	t.Logf("%d operations completed, %d with unknown outcome, %d of %d leadership transfers done; checked in %v: %s", acked.Load(), unknown.Load(), h.transferred, h.transfers, time.Since(checkStart).Round(time.Millisecond), res)
+	t.Logf("%d operations completed, %d with unknown outcome; checked in %v: %s", acked.Load(), unknown.Load(), time.Since(checkStart).Round(time.Millisecond), res)
 	if res != porcupine.Ok {
 		path := *linOut
 		if path == "" {

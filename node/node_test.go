@@ -18,10 +18,11 @@ import (
 )
 
 type member struct {
-	id  raft.NodeID
-	dir string
-	fsm *kvfsm.FSM
-	n   *node.Node
+	id   raft.NodeID
+	dir  string
+	fsm  *kvfsm.FSM
+	n    *node.Node
+	join bool
 }
 
 type cluster struct {
@@ -87,6 +88,7 @@ func (c *cluster) start(id raft.NodeID) {
 		ID:              id,
 		Dir:             filepath.Join(m.dir, "raft"),
 		Peers:           c.peers,
+		Join:            m.join,
 		StateMachine:    sm,
 		TickInterval:    10 * time.Millisecond,
 		ElectionTicks:   20,

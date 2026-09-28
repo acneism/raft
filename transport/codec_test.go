@@ -20,6 +20,13 @@ var sampleMessages = []raft.Message{
 		Voters: []raft.NodeID{"a", "b", "c"}, Learners: []raft.NodeID{"d"},
 	}}},
 	{Type: raft.MsgPreVote, From: "c", To: "a", Term: 5, Index: 11, LogTerm: 3},
+	{Type: raft.MsgSnap, From: "a", To: "d", Term: 6, Snapshot: &raft.SnapshotMeta{Index: 200, Term: 6, Conf: raft.ConfState{
+		Voters: []raft.NodeID{"a", "b"}, Learners: []raft.NodeID{"d"}, Addrs: map[raft.NodeID]string{"a": "10.0.0.1:7000", "b": "10.0.0.2:7000", "d": "10.0.0.4:7000"},
+	}}},
+	{Type: raft.MsgVote, From: "b", To: "a", Term: 7, Index: 12, LogTerm: 6, Transfer: true},
+	{Type: raft.MsgReadIndex, From: "b", To: "a", Term: 7, Index: 3},
+	{Type: raft.MsgReadIndexResp, From: "a", To: "b", Term: 7, Index: 3, Commit: 40},
+	{Type: raft.MsgTimeoutNow, From: "a", To: "b", Term: 7},
 }
 
 func TestMessageRoundTrip(t *testing.T) {

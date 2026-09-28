@@ -116,6 +116,7 @@ type meta struct {
 	compactTerm  uint64
 	snapshot     raft.SnapshotMeta
 	restoring    *raft.SnapshotMeta
+	conf         *raft.ConfState
 }
 
 var errShort = errors.New("wal: truncated record")
@@ -206,9 +207,14 @@ func (m *meta) encode() []byte {
 	b = binary.LittleEndian.AppendUint64(b, m.compactTerm)
 	b = appendSnap(b, m.snapshot)
 	if m.restoring == nil {
-		return append(b, 0)
+		b = append(b, 0)
+	} else {
+		b = appendSnap(append(b, 1), *m.restoring)
 	}
-	return appendSnap(append(b, 1), *m.restoring)
+	if m.conf == nil {
+		return b
+	}
+	return raft.AppendConfState(append(b, 1), *m.conf)
 }
 
 func decodeMeta(b []byte) (meta, error) {
@@ -217,6 +223,13 @@ func decodeMeta(b []byte) (meta, error) {
 	if r.u8() == 1 {
 		s := r.snap()
 		m.restoring = &s
+	}
+	if r.err == nil && len(r.b) > 0 && r.u8() == 1 {
+		cs, _, err := raft.DecodeConfState(r.b)
+		if err != nil {
+			return m, err
+		}
+		m.conf = &cs
 	}
 	return m, r.err
 }

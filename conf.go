@@ -191,3 +191,14 @@ func (c *Core) applyConf(cs ConfState) {
 	c.confirmReads()
 	c.sendPending = true
 }
+
+func (c *Core) Match(id NodeID) (uint64, bool) {
+	if c.state != StateLeader {
+		return 0, false
+	}
+	pr := c.trk.progress[id]
+	if pr == nil {
+		return 0, false
+	}
+	return pr.Match, true
+}

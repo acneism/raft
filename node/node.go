@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,6 +54,7 @@ type Config struct {
 	Dir             string
 	Listen          string
 	Peers           map[raft.NodeID]string
+	Join            bool
 	TLS             *tls.Config
 	StateMachine    StateMachine
 	TickInterval    time.Duration
@@ -111,6 +113,7 @@ type Node struct {
 	events     eventQueue
 	eventOut   chan Event
 	snapWanted atomic.Bool
+	peerAddrs  map[raft.NodeID]string
 }
 
 type report struct {
@@ -147,15 +150,17 @@ func Open(cfg Config) (*Node, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
-	var conf raft.ConfState
-	for id := range cfg.Peers {
-		conf.Voters = append(conf.Voters, id)
+	var boot raft.ConfState
+	if !cfg.Join {
+		for id := range cfg.Peers {
+			boot.Voters = append(boot.Voters, id)
+		}
+		slices.Sort(boot.Voters)
+		boot.Addrs = maps.Clone(cfg.Peers)
 	}
-	slices.Sort(conf.Voters)
 	n := &Node{
 		cfg:        cfg,
 		id:         cfg.ID,
-		conf:       conf,
 		fsm:        cfg.StateMachine,
 		snapRoot:   filepath.Join(cfg.Dir, "snap"),
 		logger:     cfg.Logger.With("node", cfg.ID),
@@ -176,7 +181,7 @@ func Open(cfg Config) (*Node, error) {
 	if err := os.MkdirAll(n.snapRoot, 0o700); err != nil {
 		return nil, err
 	}
-	log, err := wal.Open(filepath.Join(cfg.Dir, "wal"), conf, wal.Options{SegmentSize: cfg.SegmentSize, NoSync: cfg.NoSync})
+	log, err := wal.Open(filepath.Join(cfg.Dir, "wal"), boot, wal.Options{SegmentSize: cfg.SegmentSize, NoSync: cfg.NoSync})
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +225,19 @@ func (n *Node) start() error {
 	}
 	n.core = core
 	n.applied = applied
+	_, conf, _ := n.log.InitialState()
+	n.conf = conf
+	addrs := n.cfg.Peers
+	if len(conf.Addrs) > 0 {
+		addrs = conf.Addrs
+	}
 	peers := map[raft.NodeID]string{}
-	for id, addr := range n.cfg.Peers {
+	for id, addr := range addrs {
 		if id != n.id {
 			peers[id] = addr
 		}
 	}
+	n.peerAddrs = maps.Clone(peers)
 	n.tr, err = transport.New(transport.Config{
 		ID:          n.id,
 		Listen:      n.cfg.Listen,

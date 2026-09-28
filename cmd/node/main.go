@@ -32,6 +32,7 @@ type options struct {
 	httpOffset int
 	election   time.Duration
 	noSync     bool
+	join       bool
 }
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 	flag.IntVar(&o.httpOffset, "http-offset", 1000, "HTTP API port offset from the Raft port")
 	flag.DurationVar(&o.election, "election-timeout", time.Second, "Raft election timeout; followers wait 1-2 of it before campaigning")
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
+	flag.BoolVar(&o.join, "join", false, "join an existing cluster listed in --peers instead of bootstrapping one")
 	flag.Parse()
 
 	peers, err := parsePeers(*peerList)
@@ -140,6 +142,7 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 		PreVote:      true,
 		CheckQuorum:  true,
 		NoSync:       o.noSync,
+		Join:         o.join,
 		Logger:       slog.Default(),
 	})
 	if err != nil {
@@ -162,6 +165,10 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 	mux.HandleFunc("PUT /kv/{key}", s.put)
 	mux.HandleFunc("POST /kv/{key}/append", s.append)
 	mux.HandleFunc("POST /transfer/{id}", s.transfer)
+	mux.HandleFunc("GET /members", s.members)
+	mux.HandleFunc("POST /members/{id}", s.addLearner)
+	mux.HandleFunc("POST /members/{id}/promote", s.promote)
+	mux.HandleFunc("DELETE /members/{id}", s.remove)
 	s.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -281,4 +288,41 @@ func (s *server) transfer(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, err.Error(), http.StatusGatewayTimeout)
 	}
+}
+
+func (s *server) members(w http.ResponseWriter, r *http.Request) {
+	cs := s.n.ConfState()
+	writeJSON(w, map[string]any{"voters": cs.Voters, "learners": cs.Learners, "addrs": cs.Addrs})
+}
+
+func (s *server) membership(w http.ResponseWriter, r *http.Request, change func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	switch err := change(ctx); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, node.ErrNotLeader):
+		w.Header().Set("X-Raft-Leader", string(s.n.Status().Lead))
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	case errors.Is(err, raft.ErrConfChangeInvalid):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, raft.ErrConfChangePending), errors.Is(err, node.ErrLost):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusGatewayTimeout)
+	}
+}
+
+func (s *server) addLearner(w http.ResponseWriter, r *http.Request) {
+	s.membership(w, r, func(ctx context.Context) error {
+		return s.n.AddLearner(ctx, raft.NodeID(r.PathValue("id")), r.URL.Query().Get("addr"))
+	})
+}
+
+func (s *server) promote(w http.ResponseWriter, r *http.Request) {
+	s.membership(w, r, func(ctx context.Context) error { return s.n.Promote(ctx, raft.NodeID(r.PathValue("id"))) })
+}
+
+func (s *server) remove(w http.ResponseWriter, r *http.Request) {
+	s.membership(w, r, func(ctx context.Context) error { return s.n.Remove(ctx, raft.NodeID(r.PathValue("id"))) })
 }

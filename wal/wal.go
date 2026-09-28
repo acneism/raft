@@ -73,7 +73,7 @@ func Open(dir string, bootstrap raft.ConfState, opts Options) (*Log, error) {
 		return nil, err
 	}
 	if payload == nil {
-		l.meta = meta{epoch: 1, snapshot: raft.SnapshotMeta{Conf: bootstrap}}
+		l.meta = meta{epoch: 1, snapshot: raft.SnapshotMeta{Conf: bootstrap}, conf: &bootstrap}
 		if err := l.metaF.write(l.meta.encode(), true); err != nil {
 			l.metaF.f.Close()
 			return nil, err
@@ -227,6 +227,9 @@ func (l *Log) lastIndex() uint64 { return l.meta.compactIndex + uint64(len(l.loc
 func (l *Log) InitialState() (raft.HardState, raft.ConfState, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+	if l.meta.conf != nil {
+		return l.hs, *l.meta.conf, nil
+	}
 	return l.hs, l.meta.snapshot.Conf, nil
 }
 
@@ -501,6 +504,17 @@ func (l *Log) writeMeta(m meta) error {
 	return nil
 }
 
+func (l *Log) SetConf(cs raft.ConfState) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return ErrClosed
+	}
+	m := l.meta
+	m.conf = &cs
+	return l.writeMeta(m)
+}
+
 func (l *Log) SetRestoring(s *raft.SnapshotMeta) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -521,7 +535,8 @@ func (l *Log) ApplySnapshot(s raft.SnapshotMeta) error {
 	if s.Index <= max(l.meta.snapshot.Index, l.meta.compactIndex) {
 		return fmt.Errorf("wal: snapshot %d is not newer than %d", s.Index, max(l.meta.snapshot.Index, l.meta.compactIndex))
 	}
-	m := meta{epoch: l.meta.epoch + 1, compactIndex: s.Index, compactTerm: s.Term, snapshot: s}
+	conf := s.Conf
+	m := meta{epoch: l.meta.epoch + 1, compactIndex: s.Index, compactTerm: s.Term, snapshot: s, conf: &conf}
 	if err := l.writeMeta(m); err != nil {
 		return err
 	}

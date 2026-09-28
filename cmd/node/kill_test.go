@@ -28,10 +28,14 @@ var (
 )
 
 type proc struct {
-	id   int
-	http string
-	cmd  *exec.Cmd
-	out  *os.File
+	id      int
+	http    string
+	raft    string
+	peers   string
+	join    bool
+	removed bool
+	cmd     *exec.Cmd
+	out     *os.File
 }
 
 type harness struct {
@@ -80,9 +84,16 @@ func buildBinary(t *testing.T) string {
 
 func (h *harness) start(p *proc) {
 	h.t.Helper()
-	args := []string{"--id", fmt.Sprint(p.id), "--peers", h.peers, "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
+	peers := h.peers
+	if p.peers != "" {
+		peers = p.peers
+	}
+	args := []string{"--id", fmt.Sprint(p.id), "--peers", peers, "--dir", h.dir, "--http", p.http, "--election-timeout", "200ms"}
 	if *killNoSync {
 		args = append(args, "--unsafe-no-fsync")
+	}
+	if p.join {
+		args = append(args, "--join")
 	}
 	p.cmd = exec.Command(h.bin, args...)
 	p.cmd.Stdout, p.cmd.Stderr = p.out, p.out
@@ -122,7 +133,7 @@ func newHarness(t *testing.T) *harness {
 	if bin == "" {
 		bin = buildBinary(t)
 	}
-	h := &harness{t: t, bin: bin, dir: t.TempDir(), hc: &http.Client{Timeout: 3 * time.Second}}
+	h := &harness{t: t, bin: bin, dir: t.TempDir(), hc: &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
 	addrs := freePorts(t, 6)
 	var peers []string
 	for i := range 3 {
@@ -132,13 +143,15 @@ func newHarness(t *testing.T) *harness {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { out.Close() })
-		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], out: out})
+		h.procs = append(h.procs, &proc{id: i + 1, http: addrs[3+i], raft: addrs[i], out: out})
 	}
 	h.peers = strings.Join(peers, ",")
 	for _, p := range h.procs {
 		h.start(p)
 	}
 	t.Cleanup(func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		for _, p := range h.procs {
 			if p.cmd != nil {
 				h.kill(p)
@@ -299,4 +312,25 @@ func TestKillCycles(t *testing.T) {
 	if missing > 0 {
 		t.Fatalf("%d acknowledged writes missing; logs in %s", missing, h.dir)
 	}
+}
+
+func (h *harness) pick() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for {
+		if p := h.procs[rand.IntN(len(h.procs))]; !p.removed {
+			return p.http
+		}
+	}
+}
+
+func (h *harness) httpOf(id string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, p := range h.procs {
+		if fmt.Sprint(p.id) == id && !p.removed {
+			return p.http
+		}
+	}
+	return ""
 }

@@ -3,6 +3,8 @@ package transport
 import (
 	"encoding/binary"
 	"errors"
+	"maps"
+	"slices"
 
 	"github.com/acneism/raft"
 )
@@ -33,7 +35,17 @@ func appendSnapshotMeta(b []byte, s raft.SnapshotMeta) []byte {
 	b = appendUvarint(b, s.Index)
 	b = appendUvarint(b, s.Term)
 	b = appendIDs(b, s.Conf.Voters)
-	return appendIDs(b, s.Conf.Learners)
+	b = appendIDs(b, s.Conf.Learners)
+	if len(s.Conf.Addrs) == 0 {
+		return b
+	}
+	ids := slices.Sorted(maps.Keys(s.Conf.Addrs))
+	b = appendUvarint(b, uint64(len(ids)))
+	for _, id := range ids {
+		b = appendString(b, string(id))
+		b = appendString(b, s.Conf.Addrs[id])
+	}
+	return b
 }
 
 func AppendMessage(b []byte, m *raft.Message) []byte {
@@ -53,6 +65,9 @@ func AppendMessage(b []byte, m *raft.Message) []byte {
 	}
 	if m.Transfer {
 		flags |= 4
+	}
+	if m.Snapshot != nil && len(m.Snapshot.Conf.Addrs) > 0 {
+		flags |= 8
 	}
 	b = append(b, flags)
 	b = appendUvarint(b, m.RejectHint)
@@ -133,10 +148,18 @@ func (d *decoder) ids() []raft.NodeID {
 	return out
 }
 
-func (d *decoder) snapshotMeta() raft.SnapshotMeta {
+func (d *decoder) snapshotMeta(addrs bool) raft.SnapshotMeta {
 	s := raft.SnapshotMeta{Index: d.uvarint(), Term: d.uvarint()}
 	s.Conf.Voters = d.ids()
 	s.Conf.Learners = d.ids()
+	if addrs {
+		n := d.count(2)
+		s.Conf.Addrs = make(map[raft.NodeID]string, n)
+		for range n {
+			id := raft.NodeID(d.string())
+			s.Conf.Addrs[id] = d.string()
+		}
+	}
 	return s
 }
 
@@ -165,10 +188,10 @@ func (d *decoder) message() raft.Message {
 		}
 	}
 	if flags&2 != 0 {
-		s := d.snapshotMeta()
+		s := d.snapshotMeta(flags&8 != 0)
 		m.Snapshot = &s
 	}
-	if m.Type == 0 || m.Type > raft.MsgTimeoutNow || flags > 7 {
+	if m.Type == 0 || m.Type > raft.MsgTimeoutNow || flags > 15 {
 		d.fail()
 	}
 	return m

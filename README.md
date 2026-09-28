@@ -24,6 +24,8 @@ go get github.com/acneism/raft
   concurrent reads and works on followers.
 - **Leadership transfer.** `TransferLeadership` brings the target up to date and hands leadership over without waiting
   for an election timeout.
+- **Membership changes.** A new node joins as a learner, catches up from the log or a snapshot and is promoted to
+  voter; members are removed one change at a time. The configuration, with member addresses, travels in the log.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety
   invariants after every step and the client history for linearizability with
   [Porcupine](https://github.com/anishathalye/porcupine).
@@ -86,6 +88,17 @@ value := fsm.Get(key)
 
 `ReadIndex` returns `node.ErrNotLeader` when no leader could confirm the read; retrying is safe.
 
+Add a node: start it with `Join: true` and `Peers` listing itself and the members it can reach, then on the leader:
+
+```go
+err := n.AddLearner(ctx, "n4", "10.0.0.4:7000")
+err = n.Promote(ctx, "n4")
+err = n.Remove(ctx, "n1")
+```
+
+`Promote` waits until the learner has caught up. Stop a removed node: running on with its old configuration it can
+disturb the cluster.
+
 ## Demo
 
 A key-value node over HTTP. Run a three-node cluster in one process:
@@ -101,6 +114,9 @@ Or one node per process: the same `--peers` everywhere and `--id 1`, `--id 2`, `
 Raft port plus 1000. A plain `GET` reads the local state machine; `?consistent=1` confirms the read with
 `ReadIndex` first.
 
+`POST /members/{id}?addr=host:port`, `POST /members/{id}/promote` and `DELETE /members/{id}` change the membership
+on the leader; start a new node with `--join`. `POST /transfer/{id}` hands leadership over.
+
 ## Testing
 
 ```bash
@@ -109,6 +125,7 @@ go test ./sim -run TestSim$ -timeout 60m -args -sim.steps=10000000 -sim.seeds=8
 go test ./cmd/node -run TestKillCycles -timeout 60m -args -kill.cycles=200
 go test ./sim -run TestSimLinearizable$ -timeout 60m -args -sim.lin.steps=10000000 -sim.seeds=8
 go test ./cmd/node -run TestLinearizability -timeout 60m -args -lin.duration=5m
+go test ./cmd/node -run TestMembership -timeout 60m -args -member.duration=5m
 ```
 
 ## License

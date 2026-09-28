@@ -479,3 +479,37 @@ func TestRandomizedCrashRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestConfPersists(t *testing.T) {
+	dir := t.TempDir()
+	l := open(t, dir, Options{})
+	if _, cs, _ := l.InitialState(); !slices.Equal(cs.Voters, testConf.Voters) {
+		t.Fatalf("bootstrap configuration %+v", cs)
+	}
+	next := raft.ConfState{Voters: []raft.NodeID{"1", "2"}, Learners: []raft.NodeID{"4"}, Addrs: map[raft.NodeID]string{"1": "a", "2": "b", "4": "d"}}
+	must(t, l.SetConf(next))
+	must(t, l.Close())
+	l = open(t, dir, Options{})
+	_, cs, _ := l.InitialState()
+	if !slices.Equal(cs.Voters, next.Voters) || !slices.Equal(cs.Learners, next.Learners) || cs.Addrs["4"] != "d" {
+		t.Fatalf("configuration after reopening %+v", cs)
+	}
+	appendChunks(t, l, ents(1, 1, 10))
+	must(t, l.Sync())
+	snap := raft.SnapshotMeta{Index: 20, Term: 2, Conf: raft.ConfState{Voters: []raft.NodeID{"9"}, Addrs: map[raft.NodeID]string{"9": "z"}}}
+	must(t, l.ApplySnapshot(snap))
+	must(t, l.Close())
+	l = open(t, dir, Options{})
+	defer l.Close()
+	if _, cs, _ := l.InitialState(); !slices.Equal(cs.Voters, []raft.NodeID{"9"}) || cs.Addrs["9"] != "z" {
+		t.Fatalf("configuration after a snapshot %+v", cs)
+	}
+}
+
+func TestMetaWithoutConfDecodes(t *testing.T) {
+	old := meta{epoch: 3, compactIndex: 7, compactTerm: 2, snapshot: raft.SnapshotMeta{Index: 7, Term: 2, Conf: testConf}}
+	m, err := decodeMeta(old.encode())
+	if err != nil || m.conf != nil || m.epoch != 3 || !slices.Equal(m.snapshot.Conf.Voters, testConf.Voters) {
+		t.Fatalf("old metadata decoded as %+v, %v", m, err)
+	}
+}

@@ -87,6 +87,7 @@ func (n *Node) installSnapshot(s raft.SnapshotMeta) error {
 	if err := n.log.ApplySnapshot(s); err != nil {
 		return err
 	}
+	n.setConf(s.Conf)
 	if err := n.promote(dir, s); err != nil {
 		return err
 	}

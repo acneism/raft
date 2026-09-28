@@ -1,7 +1,6 @@
 package node
 
 import (
-	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -287,14 +286,11 @@ func (n *Node) applier() {
 		var ents []raft.Entry
 		var done []raft.Ready
 		flush := func() bool {
-			if len(ents) > 0 {
-				if err := n.fsm.Apply(ents); err != nil {
-					n.fail(fmt.Errorf("node: apply: %w", err))
-					return false
-				}
-				n.appliedTo(ents[len(ents)-1].Index, ents)
-				ents = nil
+			if err := n.applyEntries(ents); err != nil {
+				n.fail(err)
+				return false
 			}
+			ents = nil
 			if err := n.maybeCompact(); err != nil {
 				n.fail(err)
 				return false
