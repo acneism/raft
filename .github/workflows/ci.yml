@@ -108,7 +108,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: |
+      - shell: bash
+        run: |
           for f in FuzzDecodeMessage FuzzDecodeBatch FuzzDecodeOffer FuzzReadFrame; do
-            go test ./transport -run '^$' -fuzz "^$f\$" -fuzztime 20s
+            for attempt in 1 2 3; do
+              if go test ./transport -run '^$' -fuzz "^$f\$" -fuzztime 20s > fuzz.log 2>&1; then
+                tail -3 fuzz.log
+                break
+              fi
+              cat fuzz.log
+              if [ -d "transport/testdata/fuzz/$f" ] || ! grep -q "context deadline exceeded" fuzz.log || [ "$attempt" = 3 ]; then
+                exit 1
+              fi
+            done
           done
