@@ -73,6 +73,9 @@ func (n *Node) ConfState() raft.ConfState {
 }
 
 func (n *Node) changeConf(ctx context.Context, cc raft.ConfChange) error {
+	if err := n.syncCore(ctx); err != nil {
+		return err
+	}
 	n.mu.Lock()
 	index, term, err := n.core.ProposeConfChange(cc)
 	n.mu.Unlock()
@@ -88,6 +91,9 @@ func (n *Node) AddLearner(ctx context.Context, id raft.NodeID, addr string) erro
 }
 
 func (n *Node) Promote(ctx context.Context, id raft.NodeID) error {
+	if err := n.syncCore(ctx); err != nil {
+		return err
+	}
 	target := n.Status().Commit
 	for {
 		n.mu.Lock()
@@ -115,4 +121,22 @@ func (n *Node) Promote(ctx context.Context, id raft.NodeID) error {
 
 func (n *Node) Remove(ctx context.Context, id raft.NodeID) error {
 	return n.changeConf(ctx, raft.ConfChange{Type: raft.ConfRemove, Node: id})
+}
+
+func (n *Node) syncCore(ctx context.Context) error {
+	for {
+		n.wmu.Lock()
+		applied := n.applied
+		n.wmu.Unlock()
+		if n.Status().Applied >= applied {
+			return nil
+		}
+		select {
+		case <-time.After(time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-n.stopc:
+			return ErrClosed
+		}
+	}
 }

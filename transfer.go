@@ -18,6 +18,7 @@ func (c *Core) TransferLeadership(to NodeID) error {
 	c.leadTransferee, c.transferElapsed = to, 0
 	if pr := c.trk.progress[to]; pr.Match == c.log.lastIndex() {
 		c.send(Message{To: to, Type: MsgTimeoutNow})
+		c.transferTried = true
 	} else {
 		pr.forceSend = true
 		c.sendPending = true

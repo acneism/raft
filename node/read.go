@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/acneism/raft"
 )
@@ -15,6 +16,9 @@ type readResult struct {
 func (n *Node) ReadIndex(ctx context.Context) (uint64, error) {
 	ch := make(chan readResult, 1)
 	n.mu.Lock()
+	if n.cfg.LeaseReads {
+		n.catchUp(time.Now())
+	}
 	id, err := n.core.ReadIndex()
 	if err == nil {
 		n.reads[id] = append(n.reads[id], ch)

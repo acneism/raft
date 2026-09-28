@@ -62,6 +62,8 @@ type Config struct {
 	HeartbeatTicks  int
 	PreVote         bool
 	CheckQuorum     bool
+	LeaseReads      bool
+	MaxClockDrift   float64
 	SegmentSize     int64
 	NoSync          bool
 	MaxSizePerMsg   uint64
@@ -87,6 +89,8 @@ type Node struct {
 	obs        Event
 	reads      map[uint64][]chan readResult
 	changed    chan struct{}
+	tickStart  time.Time
+	ticks      int
 	transferee raft.NodeID
 
 	recvc      chan raft.Message
@@ -209,6 +213,16 @@ func (n *Node) start() error {
 		}
 		applied = snap.Index
 	}
+	lease := 0
+	if n.cfg.LeaseReads {
+		drift := n.cfg.MaxClockDrift
+		if drift <= 0 {
+			drift = 0.1
+		}
+		if lease = int(float64(n.cfg.ElectionTicks-2) / (1 + drift)); !n.cfg.CheckQuorum || lease < 1 {
+			return errors.New("node: LeaseReads needs CheckQuorum and at least 4 ElectionTicks")
+		}
+	}
 	core, err := raft.New(raft.Config{
 		ID:              n.id,
 		ElectionTick:    n.cfg.ElectionTicks,
@@ -219,6 +233,7 @@ func (n *Node) start() error {
 		MaxInflightMsgs: n.cfg.MaxInflightMsgs,
 		PreVote:         n.cfg.PreVote,
 		CheckQuorum:     n.cfg.CheckQuorum,
+		LeaseTicks:      lease,
 	})
 	if err != nil {
 		return err
@@ -249,6 +264,7 @@ func (n *Node) start() error {
 	if err != nil {
 		return err
 	}
+	n.tickStart = time.Now()
 	n.wg.Add(4)
 	go n.run()
 	go n.persister()

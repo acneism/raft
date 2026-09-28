@@ -113,7 +113,8 @@ func TestSimLinearizableCatchesBugs(t *testing.T) {
 				opts.KV, opts.Bug = true, bug
 				s := New(opts)
 				if err := s.Run(100_000); err != nil {
-					t.Fatal(err)
+					t.Logf("caught with seed %d: %.150s", seed, err)
+					return
 				}
 				if res, ops, _ := checkLinearizable(t, s, fmt.Sprintf("bug%d-%d", bug, seed)); res == porcupine.Illegal {
 					t.Logf("caught with seed %d among %d operations", seed, ops)

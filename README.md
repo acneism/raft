@@ -21,7 +21,8 @@ go get github.com/acneism/raft
 - **Snapshots on demand.** The log is compacted behind the state machine's durable index without a snapshot; a
   snapshot is taken only when a follower falls behind the compacted log.
 - **Linearizable reads.** `ReadIndex` confirms leadership with one heartbeat round instead of a log write, batches
-  concurrent reads and works on followers.
+  concurrent reads and works on followers. With `LeaseReads` the leader answers from its lease without a round,
+  assuming node clocks run at rates that differ by at most `MaxClockDrift`.
 - **Leadership transfer.** `TransferLeadership` brings the target up to date and hands leadership over without waiting
   for an election timeout.
 - **Membership changes.** A new node joins as a learner, catches up from the log or a snapshot and is promoted to
@@ -113,6 +114,8 @@ curl 'http://localhost:9001/kv/greeting?consistent=1'
 Or one node per process: the same `--peers` everywhere and `--id 1`, `--id 2`, `--id 3`. The HTTP API listens on the
 Raft port plus 1000. A plain `GET` reads the local state machine; `?consistent=1` confirms the read with
 `ReadIndex` first.
+
+`--lease-reads` serves consistent reads from the leader's lease.
 
 `POST /members/{id}?addr=host:port`, `POST /members/{id}/promote` and `DELETE /members/{id}` change the membership
 on the leader; start a new node with `--join`. `POST /transfer/{id}` hands leadership over.

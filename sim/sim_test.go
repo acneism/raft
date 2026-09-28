@@ -17,7 +17,8 @@ func config(seed uint64) Options {
 		Seed:        seed,
 		Nodes:       []int{3, 5, 3, 4}[seed%4],
 		PreVote:     seed%3 != 0,
-		CheckQuorum: seed%5 != 0,
+		CheckQuorum: seed%5 != 0 || seed%3 == 2,
+		Lease:       seed%3 == 2,
 	}
 }
 

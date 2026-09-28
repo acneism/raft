@@ -18,6 +18,7 @@ type Config struct {
 	MaxCommittedSizePerReady uint64
 	PreVote                  bool
 	CheckQuorum              bool
+	LeaseTicks               int
 	Rand                     *rand.Rand
 }
 
@@ -33,6 +34,9 @@ func (c *Config) validate() error {
 	}
 	if c.Storage == nil {
 		return errors.New("raft: nil Storage")
+	}
+	if c.LeaseTicks > 0 && (!c.CheckQuorum || c.LeaseTicks >= c.ElectionTick) {
+		return errors.New("raft: LeaseTicks needs CheckQuorum and must be below ElectionTick")
 	}
 	if c.MaxSizePerMsg == 0 {
 		c.MaxSizePerMsg = 1 << 20
@@ -92,6 +96,13 @@ type Core struct {
 	forwarded  []uint64
 	readStates []ReadState
 
+	leaseTicks    int
+	tickCount     int
+	sentAt        map[uint64]int
+	leaseFloor    uint64
+	transferTried bool
+	startupGuard  bool
+
 	prevSoft SoftState
 	prevHard HardState
 }
@@ -120,6 +131,9 @@ func New(cfg Config) (*Core, error) {
 		maxInflight:      cfg.MaxInflightMsgs,
 		maxInflightBytes: cfg.MaxInflightBytes,
 		rand:             cfg.Rand,
+		leaseTicks:       cfg.LeaseTicks,
+		sentAt:           map[uint64]int{},
+		startupGuard:     cfg.LeaseTicks > 0,
 	}
 	c.conf = cs.Clone()
 	c.term, c.vote, c.durableTerm = hs.Term, hs.Vote, hs.Term
@@ -185,6 +199,7 @@ func (c *Core) appendEntry(e Entry) uint64 {
 }
 
 func (c *Core) Tick() {
+	c.tickCount++
 	if c.state == StateLeader {
 		c.tickHeartbeat()
 	} else {
@@ -194,6 +209,9 @@ func (c *Core) Tick() {
 
 func (c *Core) tickElection() {
 	c.electionElapsed++
+	if c.electionElapsed >= c.electionTimeout {
+		c.startupGuard = false
+	}
 	if c.promotable() && c.electionElapsed >= c.randomizedElectionTimeout {
 		c.electionElapsed = 0
 		c.campaign(c.preVote)
@@ -258,6 +276,9 @@ func (c *Core) reset(term uint64) {
 	c.noopIndex = 0
 	c.sendPending = false
 	c.leadTransferee, c.transferElapsed, c.transferVote = None, 0, false
+	c.transferTried = false
+	clear(c.sentAt)
+	c.leaseFloor = c.readSeq
 	last := c.log.lastIndex()
 	for _, id := range c.trk.ids {
 		pr := c.trk.progress[id]
@@ -350,7 +371,7 @@ func (c *Core) Step(m Message) error {
 	switch {
 	case m.Term > c.term:
 		if m.Type == MsgVote || m.Type == MsgPreVote {
-			if c.checkQuorum && c.lead != None && c.electionElapsed < c.electionTimeout && !m.Transfer {
+			if c.checkQuorum && (c.lead != None || c.startupGuard) && c.electionElapsed < c.electionTimeout && !m.Transfer {
 				return nil
 			}
 		}
@@ -503,12 +524,14 @@ func (c *Core) stepLeader(m Message) {
 		}
 		if m.From == c.leadTransferee && pr.Match == c.log.lastIndex() {
 			c.send(Message{To: m.From, Type: MsgTimeoutNow})
+			c.transferTried = true
 		}
 	case MsgHeartbeatResp:
 		pr.RecentActive = true
 		pr.probeSent = false
 		pr.readAck = max(pr.readAck, m.Index)
 		c.confirmReads()
+		c.pruneSentAt()
 		if pr.Match < c.log.lastIndex() || pr.State == ProgressProbe {
 			if pr.State == ProgressReplicate && pr.inflights.full() {
 				pr.inflights.freeFirst()
@@ -528,6 +551,8 @@ func (c *Core) maybeCommit() {
 }
 
 func (c *Core) bcastHeartbeat() {
+	c.readSeq++
+	c.sentAt[c.readSeq] = c.tickCount
 	for _, id := range c.trk.ids {
 		if id == c.id {
 			continue

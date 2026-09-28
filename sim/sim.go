@@ -29,6 +29,7 @@ type Options struct {
 	Bug         Bug
 	KV          bool
 	Members     bool
+	Lease       bool
 }
 
 const kvKeys = 8
@@ -335,6 +336,7 @@ func (s *Sim) restart(n *node) {
 		MaxCommittedSizePerReady: uint64(64 + s.rng.IntN(512)),
 		PreVote:                  s.opts.PreVote,
 		CheckQuorum:              s.opts.CheckQuorum,
+		LeaseTicks:               s.leaseTicks(),
 		Rand:                     rand.New(rand.NewPCG(s.rng.Uint64(), s.rng.Uint64())),
 	})
 	if err != nil {
@@ -785,7 +787,7 @@ func (s *Sim) fault() {
 			}
 		}
 	case 11:
-		n.skew = 0.5 + 1.5*s.rng.Float64()
+		n.skew = s.skew(0.5, 2)
 	case 12:
 		n.slowDisk = !n.slowDisk
 	case 13:
@@ -1002,7 +1004,7 @@ func (s *Sim) addNode(id raft.NodeID, conf raft.ConfState) *node {
 	n := &node{
 		id:       id,
 		disk:     raft.NewMemoryStorage(conf),
-		skew:     0.8 + 0.4*s.rng.Float64(),
+		skew:     s.skew(0.8, 1.2),
 		fsm:      st,
 		fsmDur:   st,
 		snap:     st,
@@ -1084,4 +1086,18 @@ func (s *Sim) member() {
 	if _, _, err := l.core.ProposeConfChange(cc); err == nil {
 		s.process(l)
 	}
+}
+
+func (s *Sim) leaseTicks() int {
+	if s.opts.Lease {
+		return 6
+	}
+	return 0
+}
+
+func (s *Sim) skew(lo, hi float64) float64 {
+	if s.opts.Lease {
+		lo, hi = 0.97, 1.03
+	}
+	return lo + (hi-lo)*s.rng.Float64()
 }

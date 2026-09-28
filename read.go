@@ -22,6 +22,11 @@ func (c *Core) ReadIndex() (uint64, error) {
 		if !c.committedInTerm() {
 			return 0, ErrNotLeader
 		}
+		if c.leaseValid() {
+			c.readSeq++
+			c.readStates = append(c.readStates, ReadState{ID: c.readSeq, Index: c.log.committed})
+			return c.readSeq, nil
+		}
 		r := c.openRead()
 		r.local = true
 		id := r.id
@@ -45,10 +50,9 @@ func (c *Core) openRead() *readRound {
 		r.index = c.log.committed
 		return r
 	}
-	c.readSeq++
 	c.readOpen = true
-	c.reads = append(c.reads, readRound{id: c.readSeq, index: c.log.committed})
 	c.bcastHeartbeat()
+	c.reads = append(c.reads, readRound{id: c.readSeq, index: c.log.committed})
 	return &c.reads[len(c.reads)-1]
 }
 
@@ -73,6 +77,10 @@ func (c *Core) confirmReads() {
 func (c *Core) handleReadIndex(m Message) {
 	if !c.committedInTerm() {
 		c.send(Message{To: m.From, Type: MsgReadIndexResp, Index: m.Index, Reject: true})
+		return
+	}
+	if c.leaseValid() {
+		c.send(Message{To: m.From, Type: MsgReadIndexResp, Index: m.Index, Commit: c.log.committed})
 		return
 	}
 	r := c.openRead()
@@ -104,3 +112,26 @@ func (c *Core) failReads() {
 	}
 	c.reads, c.forwarded, c.readOpen = c.reads[:0], c.forwarded[:0], false
 }
+
+func (c *Core) leaseValid() bool {
+	if c.leaseTicks == 0 || c.transferTried || !c.committedInTerm() || !c.trk.isVoter(c.id) {
+		return false
+	}
+	if len(c.trk.voters) == 1 {
+		return true
+	}
+	seq := c.trk.readConfirmed(c.id)
+	at, ok := c.sentAt[seq]
+	return ok && seq > c.leaseFloor && c.tickCount < at+c.leaseTicks
+}
+
+func (c *Core) pruneSentAt() {
+	confirmed := c.trk.readConfirmed(c.id)
+	for seq := range c.sentAt {
+		if seq < confirmed {
+			delete(c.sentAt, seq)
+		}
+	}
+}
+
+func (c *Core) DropLease() { c.leaseFloor = c.readSeq }

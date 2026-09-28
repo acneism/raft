@@ -33,6 +33,8 @@ type options struct {
 	election   time.Duration
 	noSync     bool
 	join       bool
+	leaseReads bool
+	drift      float64
 }
 
 func main() {
@@ -46,6 +48,8 @@ func main() {
 	flag.DurationVar(&o.election, "election-timeout", time.Second, "Raft election timeout; followers wait 1-2 of it before campaigning")
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
 	flag.BoolVar(&o.join, "join", false, "join an existing cluster listed in --peers instead of bootstrapping one")
+	flag.BoolVar(&o.leaseReads, "lease-reads", false, "serve linearizable reads from the leader's lease without a heartbeat round")
+	flag.Float64Var(&o.drift, "max-clock-drift", 0.1, "largest relative difference between node clock rates that lease reads tolerate")
 	flag.Parse()
 
 	peers, err := parsePeers(*peerList)
@@ -134,16 +138,18 @@ func start(id raft.NodeID, peers map[raft.NodeID]string, o options) (*server, er
 		return nil, err
 	}
 	n, err := node.Open(node.Config{
-		ID:           id,
-		Dir:          filepath.Join(dir, "raft"),
-		Peers:        peers,
-		StateMachine: fsm,
-		TickInterval: o.election / 100,
-		PreVote:      true,
-		CheckQuorum:  true,
-		NoSync:       o.noSync,
-		Join:         o.join,
-		Logger:       slog.Default(),
+		ID:            id,
+		Dir:           filepath.Join(dir, "raft"),
+		Peers:         peers,
+		StateMachine:  fsm,
+		TickInterval:  o.election / 100,
+		PreVote:       true,
+		CheckQuorum:   true,
+		NoSync:        o.noSync,
+		Join:          o.join,
+		LeaseReads:    o.leaseReads,
+		MaxClockDrift: o.drift,
+		Logger:        slog.Default(),
 	})
 	if err != nil {
 		fsm.Close()

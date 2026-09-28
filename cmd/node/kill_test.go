@@ -25,6 +25,7 @@ var (
 	killClients = flag.Int("kill.clients", 16, "concurrent writers")
 	killNoSync  = flag.Bool("kill.nosync", false, "run the nodes with --unsafe-no-fsync")
 	killBin     = flag.String("kill.bin", "", "prebuilt node binary; built from source when empty")
+	killLease   = flag.Bool("kill.lease", false, "run the nodes with --lease-reads")
 )
 
 type proc struct {
@@ -94,6 +95,9 @@ func (h *harness) start(p *proc) {
 	}
 	if p.join {
 		args = append(args, "--join")
+	}
+	if *killLease {
+		args = append(args, "--lease-reads")
 	}
 	p.cmd = exec.Command(h.bin, args...)
 	p.cmd.Stdout, p.cmd.Stderr = p.out, p.out

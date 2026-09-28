@@ -58,19 +58,13 @@ func (n *Node) run() {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.cfg.TickInterval)
 	defer ticker.Stop()
-	start, ticks := time.Now(), 0
 	for {
 		select {
 		case <-n.stopc:
 			return
 		case now := <-ticker.C:
-			due := int(now.Sub(start) / n.cfg.TickInterval)
-			ticks = max(ticks, due-2*n.cfg.ElectionTicks)
 			n.mu.Lock()
-			for ; ticks < due; ticks++ {
-				n.core.Tick()
-				n.observe()
-			}
+			n.catchUp(now)
 			n.mu.Unlock()
 		case m := <-n.recvc:
 			n.mu.Lock()
@@ -336,5 +330,17 @@ func (n *Node) applier() {
 		if !flush() {
 			return
 		}
+	}
+}
+
+func (n *Node) catchUp(now time.Time) {
+	due := int(now.Sub(n.tickStart) / n.cfg.TickInterval)
+	if floor := due - 2*n.cfg.ElectionTicks; n.ticks < floor {
+		n.ticks = floor
+		n.core.DropLease()
+	}
+	for ; n.ticks < due; n.ticks++ {
+		n.core.Tick()
+		n.observe()
 	}
 }
