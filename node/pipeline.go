@@ -58,6 +58,8 @@ func (n *Node) run() {
 	defer n.wg.Done()
 	ticker := time.NewTicker(n.cfg.TickInterval)
 	defer ticker.Stop()
+	compact := time.NewTicker(time.Duration(n.cfg.ElectionTicks) * n.cfg.TickInterval)
+	defer compact.Stop()
 	for {
 		select {
 		case <-n.stopc:
@@ -66,6 +68,8 @@ func (n *Node) run() {
 			n.mu.Lock()
 			n.catchUp(now)
 			n.mu.Unlock()
+		case <-compact.C:
+			n.aq.push(applyJob{})
 		case m := <-n.recvc:
 			n.mu.Lock()
 			n.step(m)

@@ -15,6 +15,7 @@ import (
 	"github.com/acneism/raft"
 	"github.com/acneism/raft/internal/kvfsm"
 	"github.com/acneism/raft/node"
+	"github.com/acneism/raft/wal"
 )
 
 type member struct {
@@ -462,6 +463,54 @@ func TestRestartReplaysAfterDurableIndex(t *testing.T) {
 	applied := c.members[l.id].fsm.Applied()
 	if uint64(applies) > applied-durable+5 {
 		t.Fatalf("replayed %d entries, durable index was %d of %d", applies, durable, applied)
+	}
+}
+
+type lateDurable struct {
+	*kvfsm.FSM
+	synced, asked *atomic.Bool
+}
+
+func (f lateDurable) DurableIndex() uint64 {
+	if !f.synced.Load() {
+		return 0
+	}
+	f.asked.Store(true)
+	return f.FSM.DurableIndex()
+}
+
+func TestCompactsWhenDurableIndexGrowsAfterApply(t *testing.T) {
+	var synced, asked atomic.Bool
+	c := newCluster(t, 3, func(cfg *node.Config) { cfg.CompactEntries, cfg.TrailingEntries = 50, 10 })
+	c.wrap = func(id raft.NodeID, f *kvfsm.FSM) node.StateMachine {
+		if id != "n1" {
+			return f
+		}
+		return lateDurable{f, &synced, &asked}
+	}
+	c.stop("n1")
+	c.start("n1")
+	for i := range 100 {
+		c.write(fmt.Sprintf("k%d", i), "v")
+	}
+	c.converged(5 * time.Second)
+	synced.Store(true)
+	deadline := time.Now().Add(slowDisk)
+	for !asked.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the node never rechecked the durable index without new writes")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m := c.members["n1"]
+	c.stop("n1")
+	log, err := wal.Open(filepath.Join(m.dir, "raft", "wal"), raft.ConfState{}, wal.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	if first, _ := log.FirstIndex(); first == 1 {
+		t.Fatal("the log was never compacted")
 	}
 }
 

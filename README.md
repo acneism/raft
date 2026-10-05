@@ -46,8 +46,9 @@ type StateMachine interface {
 ```
 
 `DurableIndex` is the last index the state machine has on disk: the node replays the log after it on restart and
-compacts the log up to it, keeping `TrailingEntries` more. `Snapshot` writes the applied state into `dir` and returns
-its index, which must not be below `DurableIndex`.
+compacts the log up to it, keeping `TrailingEntries` more. It may lag `Apply`, for example until a background fsync:
+the node reads it after every applied batch and once per election timeout. `Snapshot` writes the applied state into
+`dir` and returns its index, which must not be below `DurableIndex`.
 
 Run a node:
 
