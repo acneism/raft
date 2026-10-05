@@ -91,7 +91,7 @@ value := fsm.Get(key)
 
 `ReadIndex` returns `node.ErrNotLeader` when no leader could confirm the read; retrying is safe.
 
-Add a node: start it with `Join: true` and `Peers` listing itself and the members it can reach, then on the leader:
+Add a node: start it with `Join: true` and `Peers` listing at least itself, then on the leader:
 
 ```go
 err := n.AddLearner(ctx, "n4", "10.0.0.4:7000")
@@ -99,7 +99,8 @@ err = n.Promote(ctx, "n4")
 err = n.Remove(ctx, "n1")
 ```
 
-`Promote` waits until the learner has caught up. Stop a removed node: running on with its old configuration it can
+The members dial the new node once they add it, and the node learns their addresses from the connections it accepts
+before it has a configuration. `Promote` waits until the learner has caught up. Stop a removed node: running on with its old configuration it can
 disturb the cluster.
 
 ## Demo

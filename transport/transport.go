@@ -26,6 +26,7 @@ type Handler interface {
 type Config struct {
 	ID            raft.NodeID
 	Listen        string
+	Advertise     string
 	Peers         map[raft.NodeID]string
 	TLS           *tls.Config
 	Handler       Handler
@@ -34,6 +35,7 @@ type Config struct {
 	MaxQueueBytes int64
 	DialTimeout   time.Duration
 	IOTimeout     time.Duration
+	UnknownPeer   func(id raft.NodeID, addr string)
 }
 
 type Transport struct {
@@ -158,7 +160,7 @@ func (t *Transport) dialVersion(id raft.NodeID, addr string, kind byte) (net.Con
 	c.SetWriteDeadline(time.Now().Add(t.cfg.IOTimeout))
 	h := hello{kind: kind, from: string(t.cfg.ID), to: string(id)}
 	if kind == streamMessages {
-		h.max = protocolVersion
+		h.max, h.addr = protocolVersion, t.cfg.Advertise
 	}
 	if err := writeFrame(w, frameHello, h.encode()); err == nil {
 		err = w.Flush()
@@ -218,6 +220,9 @@ func (t *Transport) serve(c net.Conn) {
 		if err != nil || id != from {
 			return
 		}
+	}
+	if t.peer(from) == nil && h.addr != "" && t.cfg.UnknownPeer != nil {
+		t.cfg.UnknownPeer(from, h.addr)
 	}
 	if t.peer(from) == nil {
 		return

@@ -210,6 +210,36 @@ func TestTLSIdentityMustMatchHello(t *testing.T) {
 	}
 }
 
+func TestUnknownDialerOfferedAfterIdentityCheck(t *testing.T) {
+	pki := testPKI(t, "a", "b", "c")
+	offered := make(chan string, 8)
+	b, err := New(Config{ID: "b", Listen: "127.0.0.1:0", TLS: pki["b"], Handler: newRecorder(), SnapshotDir: t.TempDir(),
+		UnknownPeer: func(id raft.NodeID, addr string) { offered <- string(id) + "=" + addr }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	dial := func(cert, addr string) {
+		d, err := New(Config{ID: "a", Listen: "127.0.0.1:0", Advertise: addr, TLS: pki[cert], Handler: newRecorder(), SnapshotDir: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		d.AddPeer("b", b.Addr().String())
+	}
+	dial("c", "10.0.0.3:7000")
+	time.Sleep(300 * time.Millisecond)
+	dial("a", "10.0.0.1:7000")
+	select {
+	case got := <-offered:
+		if got != "a=10.0.0.1:7000" {
+			t.Fatalf("offered %s", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dialer with a matching certificate was not offered")
+	}
+}
+
 func TestSpoofedSenderDropped(t *testing.T) {
 	a, _, _, rb := newPair(t, nil, nil)
 	a.Send([]raft.Message{

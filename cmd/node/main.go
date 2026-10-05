@@ -49,7 +49,7 @@ func main() {
 	flag.IntVar(&o.httpOffset, "http-offset", 1000, "HTTP API port offset from the Raft port")
 	flag.DurationVar(&o.election, "election-timeout", time.Second, "Raft election timeout; followers wait 1-2 of it before campaigning")
 	flag.BoolVar(&o.noSync, "unsafe-no-fsync", false, "do not fsync log segments")
-	flag.BoolVar(&o.join, "join", false, "join an existing cluster listed in --peers instead of bootstrapping one")
+	flag.BoolVar(&o.join, "join", false, "join an existing cluster instead of bootstrapping one; --peers may list only this node")
 	flag.BoolVar(&o.leaseReads, "lease-reads", false, "serve linearizable reads from the leader's lease without a heartbeat round")
 	flag.Float64Var(&o.drift, "max-clock-drift", 0.1, "largest relative difference between node clock rates that lease reads tolerate")
 	flag.Parse()

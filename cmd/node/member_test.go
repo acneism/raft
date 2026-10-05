@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 )
@@ -85,21 +84,16 @@ func (h *harness) changeMembers(method, path string) bool {
 
 func (h *harness) addMember(stats *membershipStats) {
 	ports := freePorts(h.t, 2)
-	var peers []string
-	for _, p := range h.live() {
-		peers = append(peers, fmt.Sprintf("%d=%s", p.id, p.raft))
-	}
 	h.mu.Lock()
 	id := len(h.procs) + 1
 	h.mu.Unlock()
 	advertised := h.net.listen(h.t, fmt.Sprint(id), ports[0])
-	peers = append(peers, fmt.Sprintf("%d=%s", id, advertised))
 	out, err := os.Create(filepath.Join(h.dir, fmt.Sprintf("node%d.log", id)))
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.t.Cleanup(func() { out.Close() })
-	p := &proc{id: id, http: ports[1], raft: advertised, listen: ports[0], peers: strings.Join(peers, ","), join: true, out: out}
+	p := &proc{id: id, http: ports[1], raft: advertised, listen: ports[0], peers: fmt.Sprintf("%d=%s", id, advertised), join: true, out: out}
 	h.start(p)
 	h.mu.Lock()
 	h.procs = append(h.procs, p)

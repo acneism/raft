@@ -66,6 +66,16 @@ func (n *Node) setConf(cs raft.ConfState) {
 	delete(n.peerAddrs, n.id)
 }
 
+func (n *Node) admit(id raft.NodeID, addr string) {
+	n.wmu.Lock()
+	defer n.wmu.Unlock()
+	if n.tr == nil || len(n.conf.Voters)+len(n.conf.Learners) > 0 {
+		return
+	}
+	n.peerAddrs[id] = addr
+	n.tr.AddPeer(id, addr)
+}
+
 func (n *Node) ConfState() raft.ConfState {
 	n.wmu.Lock()
 	defer n.wmu.Unlock()

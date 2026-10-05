@@ -253,17 +253,22 @@ func (n *Node) start() error {
 		}
 	}
 	n.peerAddrs = maps.Clone(peers)
-	n.tr, err = transport.New(transport.Config{
+	tr, err := transport.New(transport.Config{
 		ID:          n.id,
 		Listen:      n.cfg.Listen,
+		Advertise:   addrs[n.id],
 		Peers:       peers,
 		TLS:         n.cfg.TLS,
 		Handler:     n,
 		SnapshotDir: n.snapRoot,
+		UnknownPeer: n.admit,
 	})
 	if err != nil {
 		return err
 	}
+	n.wmu.Lock()
+	n.tr = tr
+	n.wmu.Unlock()
 	n.tickStart = time.Now()
 	n.wg.Add(4)
 	go n.run()

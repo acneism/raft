@@ -86,6 +86,7 @@ type hello struct {
 	kind     byte
 	from, to string
 	max      uint64
+	addr     string
 }
 
 func (h hello) encode() []byte {
@@ -95,7 +96,11 @@ func (h hello) encode() []byte {
 	if h.max == 0 {
 		return b
 	}
-	return appendUvarint(b, h.max)
+	b = appendUvarint(b, h.max)
+	if h.addr == "" {
+		return b
+	}
+	return appendString(b, h.addr)
 }
 
 func decodeHello(p []byte) (hello, error) {
@@ -106,6 +111,9 @@ func decodeHello(p []byte) (hello, error) {
 	h := hello{kind: d.byte(), from: d.string(), to: d.string()}
 	if d.err == nil && len(d.b) > 0 {
 		h.max = d.uvarint()
+	}
+	if d.err == nil && len(d.b) > 0 {
+		h.addr = d.string()
 	}
 	return h, d.err
 }

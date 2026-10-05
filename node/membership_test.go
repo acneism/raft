@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/acneism/raft"
+	"github.com/acneism/raft/node"
 )
 
 func (c *cluster) addMember(id raft.NodeID) *member {
@@ -128,4 +129,25 @@ func TestLearnersJoinOneAfterAnotherBySnapshot(t *testing.T) {
 			t.Fatalf("%s caught up without a snapshot", id)
 		}
 	}
+}
+
+func TestJoinKnowingOnlyItself(t *testing.T) {
+	c := newCluster(t, 3, func(cfg *node.Config) {
+		if cfg.Join {
+			cfg.Peers = map[raft.NodeID]string{cfg.ID: cfg.Peers[cfg.ID]}
+		}
+	})
+	c.write("a", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.addMember("n4")
+	l := c.leader(5 * time.Second)
+	if err := l.n.AddLearner(ctx, "n4", c.peers["n4"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.n.Promote(ctx, "n4"); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	c.write("b", "2")
+	c.converged(5 * time.Second)
 }
