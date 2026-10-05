@@ -112,6 +112,9 @@ func (n *Node) snapshotUsable(snap raft.SnapshotMeta) bool {
 	if first, _ := n.log.FirstIndex(); snap.Index+1 < first {
 		return false
 	}
+	if snap.Index > 0 && !exists(n.snapDir(snap)) {
+		return false
+	}
 	cs := n.ConfState()
 	for _, id := range append(cs.Voters, cs.Learners...) {
 		if !snap.Conf.IsVoter(id) && !snap.Conf.IsLearner(id) {
@@ -168,8 +171,10 @@ func (n *Node) maybeSnapshot() error {
 	if err := n.promote(tmp, meta); err != nil {
 		return err
 	}
-	if _, err := n.log.CreateSnapshot(meta.Index, n.conf); err != nil {
-		return err
+	if snap.Index != meta.Index || snap.Term != meta.Term {
+		if _, err := n.log.CreateSnapshot(meta.Index, n.conf); err != nil {
+			return err
+		}
 	}
 	n.logger.Info("created a snapshot for a lagging follower", "index", meta.Index)
 	n.prune(meta.Index)
@@ -198,7 +203,7 @@ func (n *Node) prune(keep uint64) {
 		}
 	}
 	slices.SortFunc(names, func(a, b string) int { return strings.Compare(a[17:], b[17:]) })
-	for len(names) > 2 {
+	for len(names) > n.cfg.KeepSnapshots {
 		os.RemoveAll(filepath.Join(n.snapRoot, names[0]))
 		names = names[1:]
 	}

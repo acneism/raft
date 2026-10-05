@@ -76,6 +76,7 @@ type Config struct {
 	MaxInflightMsgs int
 	CompactEntries  uint64
 	TrailingEntries uint64
+	KeepSnapshots   int
 	SerialPersist   bool
 	Logger          *slog.Logger
 }
@@ -161,6 +162,9 @@ func Open(cfg Config) (*Node, error) {
 	}
 	if cfg.TrailingEntries == 0 {
 		cfg.TrailingEntries = 1024
+	}
+	if cfg.KeepSnapshots <= 0 {
+		cfg.KeepSnapshots = 2
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)

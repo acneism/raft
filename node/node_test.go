@@ -595,3 +595,53 @@ func TestHasState(t *testing.T) {
 		t.Fatalf("directory without a node: %v, %v", ok, err)
 	}
 }
+
+func snapshotDirs(t *testing.T, m *member) []string {
+	t.Helper()
+	des, err := os.ReadDir(filepath.Join(m.dir, "raft", "snap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, de := range des {
+		var term, index uint64
+		if n, _ := fmt.Sscanf(de.Name(), "%016x-%016x", &term, &index); n == 2 && de.IsDir() {
+			out = append(out, filepath.Join(m.dir, "raft", "snap", de.Name()))
+		}
+	}
+	return out
+}
+
+func TestKeepSnapshotsAndMissingFiles(t *testing.T) {
+	c := newCluster(t, 5, func(cfg *node.Config) { cfg.KeepSnapshots = 1 })
+	l := c.leader(5 * time.Second)
+	var lag []raft.NodeID
+	for id := range c.members {
+		if id != l.id && len(lag) < 2 {
+			lag = append(lag, id)
+		}
+	}
+	c.stop(lag[0])
+	c.stop(lag[1])
+	for i := range 600 {
+		c.write(fmt.Sprintf("k%d", i), "v")
+	}
+	c.start(lag[0])
+	c.converged(10 * time.Second)
+	l = c.leader(5 * time.Second)
+	snaps := snapshotDirs(t, l)
+	if len(snaps) != 1 {
+		t.Fatalf("leader keeps snapshots %v, want one", snaps)
+	}
+	if err := os.RemoveAll(snaps[0]); err != nil {
+		t.Fatal(err)
+	}
+	c.start(lag[1])
+	c.converged(10 * time.Second)
+	if _, restores, _ := c.members[lag[1]].fsm.Stats(); restores == 0 {
+		t.Fatalf("%s caught up without a snapshot", lag[1])
+	}
+	if snaps := snapshotDirs(t, c.leader(5*time.Second)); len(snaps) != 1 {
+		t.Fatalf("leader keeps snapshots %v, want one", snaps)
+	}
+}

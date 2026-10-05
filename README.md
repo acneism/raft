@@ -24,7 +24,8 @@ go get github.com/acneism/raft
   are never lost, and replay after a restart starts at the state machine's durable index. `Status` reports the log
   bounds, the latest snapshot and, on the leader, the replication progress of every member.
 - **Snapshots on demand.** The log is compacted behind the state machine's durable index without a snapshot; a
-  snapshot is taken only when a follower falls behind the compacted log.
+  snapshot is taken only when a follower falls behind the compacted log. `KeepSnapshots` sets how many of the newest
+  stay on disk, 2 by default, and a snapshot whose files are gone is taken again.
 - **Linearizable reads.** `ReadIndex` confirms leadership with one heartbeat round instead of a log write, batches
   concurrent reads and works on followers. With `LeaseReads` the leader answers from its lease without a round,
   assuming node clocks run at rates that differ by at most `MaxClockDrift`.
