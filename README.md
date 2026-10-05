@@ -77,7 +77,8 @@ err = n.Wait(ctx, p)
 ```
 
 `Wait` returns `nil` once the entry is applied, `node.ErrLost` if another entry took its index, `node.ErrUnknown` if
-leadership was lost first, and `node.ErrClosed` after `Close`.
+leadership was lost first, and `node.ErrClosed` after `Close`. `node.HasState(dir)` tells a restart from a first
+start before `Open`, for example to refuse to bootstrap over existing data.
 
 Read linearizably on any node:
 

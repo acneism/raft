@@ -513,3 +513,27 @@ func TestMetaWithoutConfDecodes(t *testing.T) {
 		t.Fatalf("old metadata decoded as %+v, %v", m, err)
 	}
 }
+
+func TestExists(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "wal")
+	if ok, err := Exists(dir); ok || err != nil {
+		t.Fatalf("missing directory: %v, %v", ok, err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta"), make([]byte, 2*metaSlot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := Exists(dir); ok || err != nil {
+		t.Fatalf("meta file without a valid slot: %v, %v", ok, err)
+	}
+	l, err := Open(dir, testConf, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if ok, err := Exists(dir); !ok || err != nil {
+		t.Fatalf("after Open: %v, %v", ok, err)
+	}
+}

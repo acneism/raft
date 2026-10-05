@@ -584,3 +584,14 @@ func TestProposeInRejectsOtherTerm(t *testing.T) {
 		t.Fatalf("proposal in the current term: %+v, %v", p, err)
 	}
 }
+
+func TestHasState(t *testing.T) {
+	c := newCluster(t, 1, nil)
+	m := c.members["n1"]
+	if ok, err := node.HasState(filepath.Join(m.dir, "raft")); !ok || err != nil {
+		t.Fatalf("node directory: %v, %v", ok, err)
+	}
+	if ok, err := node.HasState(m.dir); ok || err != nil {
+		t.Fatalf("directory without a node: %v, %v", ok, err)
+	}
+}

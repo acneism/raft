@@ -130,6 +130,8 @@ type report struct {
 	failed   bool
 }
 
+func HasState(dir string) (bool, error) { return wal.Exists(filepath.Join(dir, "wal")) }
+
 func Open(cfg Config) (*Node, error) {
 	if cfg.ID == raft.None || cfg.Dir == "" || cfg.StateMachine == nil {
 		return nil, errors.New("node: ID, Dir and StateMachine are required")

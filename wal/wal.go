@@ -56,6 +56,22 @@ type Log struct {
 	fileMu     sync.Mutex
 }
 
+func Exists(dir string) (bool, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "meta"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for off := 0; off+metaSlot <= len(b); off += metaSlot {
+		if _, _, ok := decodeSlot(b[off : off+metaSlot]); ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func Open(dir string, bootstrap raft.ConfState, opts Options) (*Log, error) {
 	if opts.SegmentSize <= 0 {
 		opts.SegmentSize = 16 << 20
