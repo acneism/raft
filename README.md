@@ -17,7 +17,9 @@ go get github.com/acneism/raft
 - **Segmented log.** CRC-chained records, logical compaction to any index, crash-safe HardState; Linux and Windows.
 - **Transport.** Framed TCP with a binary codec, mutual TLS, resumable snapshot transfer; peers negotiate the protocol
   version, so a cluster can be upgraded one node at a time. Failed dials, rejected connections and TLS errors go to
-  the node's `Logger`, at most once per 30 seconds for each peer.
+  the node's `Logger`, at most once per 30 seconds for each peer. With `ClusterID` set, a node refuses connections
+  from nodes of another cluster; nodes without a `ClusterID` are still accepted, with a warning, so it can be turned
+  on one node at a time.
 - **Node.** `Propose` returns the index and term without waiting for IO, `Wait` always completes, leadership events
   are never lost, and replay after a restart starts at the state machine's durable index. `Status` reports the log
   bounds, the latest snapshot and, on the leader, the replication progress of every member.

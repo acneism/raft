@@ -34,6 +34,7 @@ type Handler interface {
 
 type Config struct {
 	ID            raft.NodeID
+	ClusterID     string
 	Listen        string
 	Advertise     string
 	Peers         map[raft.NodeID]string
@@ -190,7 +191,7 @@ func (t *Transport) dialVersion(id raft.NodeID, addr string, kind byte) (net.Con
 	}
 	w := bufio.NewWriterSize(c, 64<<10)
 	c.SetWriteDeadline(time.Now().Add(t.cfg.IOTimeout))
-	h := hello{kind: kind, from: string(t.cfg.ID), to: string(id)}
+	h := hello{kind: kind, from: string(t.cfg.ID), to: string(id), cluster: t.cfg.ClusterID}
 	if kind == streamMessages {
 		h.max, h.addr = protocolVersion, t.cfg.Advertise
 	}
@@ -280,6 +281,13 @@ func (t *Transport) serve(c net.Conn) {
 		return
 	}
 	from := raft.NodeID(h.from)
+	if t.cfg.ClusterID != "" && h.cluster != "" && h.cluster != t.cfg.ClusterID {
+		reject("rejected a connection from another cluster", "from", from, "cluster", h.cluster)
+		return
+	}
+	if t.cfg.ClusterID != "" && h.cluster == "" && t.allow("no cluster "+string(from)) {
+		t.cfg.Logger.Warn("accepted a connection without a cluster ID", "from", from, "remote", remote)
+	}
 	if tc, ok := c.(*tls.Conn); ok {
 		id, err := Identity(tc.ConnectionState())
 		if err != nil || id != from {

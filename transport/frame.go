@@ -88,20 +88,25 @@ type hello struct {
 	from, to string
 	max      uint64
 	addr     string
+	cluster  string
 }
 
 func (h hello) encode() []byte {
 	b := []byte{helloVersion, h.kind}
 	b = appendString(b, h.from)
 	b = appendString(b, h.to)
-	if h.max == 0 {
+	if h.max == 0 && h.addr == "" && h.cluster == "" {
 		return b
 	}
 	b = appendUvarint(b, h.max)
-	if h.addr == "" {
+	if h.addr == "" && h.cluster == "" {
 		return b
 	}
-	return appendString(b, h.addr)
+	b = appendString(b, h.addr)
+	if h.cluster == "" {
+		return b
+	}
+	return appendString(b, h.cluster)
 }
 
 func decodeHello(p []byte) (hello, error) {
@@ -115,6 +120,9 @@ func decodeHello(p []byte) (hello, error) {
 	}
 	if d.err == nil && len(d.b) > 0 {
 		h.addr = d.string()
+	}
+	if d.err == nil && len(d.b) > 0 {
+		h.cluster = d.string()
 	}
 	return h, d.err
 }

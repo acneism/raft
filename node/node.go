@@ -56,6 +56,7 @@ type StateMachine interface {
 
 type Config struct {
 	ID              raft.NodeID
+	ClusterID       string
 	Dir             string
 	Listen          string
 	Peers           map[raft.NodeID]string
@@ -268,6 +269,7 @@ func (n *Node) start() error {
 	n.peerAddrs = maps.Clone(peers)
 	tr, err := transport.New(transport.Config{
 		ID:          n.id,
+		ClusterID:   n.cfg.ClusterID,
 		Listen:      n.cfg.Listen,
 		Advertise:   addrs[n.id],
 		Peers:       peers,
