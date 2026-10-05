@@ -262,6 +262,7 @@ func (n *Node) start() error {
 		Handler:     n,
 		SnapshotDir: n.snapRoot,
 		UnknownPeer: n.admit,
+		Logger:      n.logger,
 	})
 	if err != nil {
 		return err

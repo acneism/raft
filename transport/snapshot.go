@@ -106,6 +106,9 @@ func (t *Transport) SendSnapshot(m raft.Message, dir string) {
 		t.mu.Lock()
 		delete(t.snaps, m.To)
 		t.mu.Unlock()
+		if err != nil && t.allow("send snapshot "+string(m.To)) {
+			t.cfg.Logger.Warn("cannot send a snapshot to a peer", "peer", m.To, "index", m.Snapshot.Index, "err", err)
+		}
 		t.cfg.Handler.ReportSnapshot(m.To, err != nil)
 	}()
 }
@@ -204,14 +207,24 @@ func sendFile(c net.Conn, w *bufio.Writer, f *os.File, idx int, off, size int64,
 }
 
 func (t *Transport) receiveSnapshot(c net.Conn, r *bufio.Reader, from raft.NodeID) {
+	fail := func(err error) {
+		if t.allow("receive snapshot " + string(from)) {
+			t.cfg.Logger.Warn("cannot receive a snapshot from a peer", "peer", from, "err", err)
+		}
+	}
 	w := bufio.NewWriter(c)
 	c.SetDeadline(time.Now().Add(t.cfg.IOTimeout))
 	p, err := expectFrame(r, frameSnapOffer)
 	if err != nil {
+		fail(err)
 		return
 	}
 	m, files, err := decodeOffer(p)
-	if err != nil || m.Type != raft.MsgSnap || m.Snapshot == nil || m.From != from || m.To != t.cfg.ID {
+	if err == nil && (m.Type != raft.MsgSnap || m.Snapshot == nil || m.From != from || m.To != t.cfg.ID) {
+		err = fmt.Errorf("transport: unexpected %v from %s to %s in a snapshot offer", m.Type, m.From, m.To)
+	}
+	if err != nil {
+		fail(err)
 		return
 	}
 	dir, err := t.receiveFiles(c, r, w, *m.Snapshot, files)
@@ -220,7 +233,15 @@ func (t *Transport) receiveSnapshot(c net.Conn, r *bufio.Reader, from raft.NodeI
 		result = append([]byte{0}, err.Error()...)
 	}
 	c.SetWriteDeadline(time.Now().Add(t.cfg.IOTimeout))
-	if writeFrame(w, frameSnapResult, result) != nil || w.Flush() != nil || err != nil {
+	werr := writeFrame(w, frameSnapResult, result)
+	if werr == nil {
+		werr = w.Flush()
+	}
+	if err == nil {
+		err = werr
+	}
+	if err != nil {
+		fail(err)
 		return
 	}
 	t.cfg.Handler.ReceiveSnapshot(m, dir)

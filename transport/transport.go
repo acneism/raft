@@ -5,14 +5,19 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/acneism/raft"
 )
+
+const logEvery = 30 * time.Second
 
 var ErrClosed = errors.New("transport: closed")
 
@@ -36,17 +41,20 @@ type Config struct {
 	DialTimeout   time.Duration
 	IOTimeout     time.Duration
 	UnknownPeer   func(id raft.NodeID, addr string)
+	Logger        *slog.Logger
 }
 
 type Transport struct {
-	cfg   Config
-	ln    net.Listener
-	peers map[raft.NodeID]*peer
-	done  chan struct{}
-	wg    sync.WaitGroup
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
-	snaps map[raft.NodeID]bool
+	cfg    Config
+	ln     net.Listener
+	peers  map[raft.NodeID]*peer
+	done   chan struct{}
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	snaps  map[raft.NodeID]bool
+	logMu  sync.Mutex
+	logged map[string]time.Time
 }
 
 func New(cfg Config) (*Transport, error) {
@@ -62,6 +70,9 @@ func New(cfg Config) (*Transport, error) {
 	if cfg.IOTimeout <= 0 {
 		cfg.IOTimeout = 10 * time.Second
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.DiscardHandler)
+	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return nil, err
@@ -72,12 +83,13 @@ func New(cfg Config) (*Transport, error) {
 		ln = tls.NewListener(ln, sc)
 	}
 	t := &Transport{
-		cfg:   cfg,
-		ln:    ln,
-		peers: map[raft.NodeID]*peer{},
-		done:  make(chan struct{}),
-		conns: map[net.Conn]struct{}{},
-		snaps: map[raft.NodeID]bool{},
+		cfg:    cfg,
+		ln:     ln,
+		peers:  map[raft.NodeID]*peer{},
+		done:   make(chan struct{}),
+		conns:  map[net.Conn]struct{}{},
+		snaps:  map[raft.NodeID]bool{},
+		logged: map[string]time.Time{},
 	}
 	for id, addr := range cfg.Peers {
 		t.AddPeer(id, addr)
@@ -88,6 +100,20 @@ func New(cfg Config) (*Transport, error) {
 }
 
 func (t *Transport) Addr() net.Addr { return t.ln.Addr() }
+
+func (t *Transport) allow(key string) bool {
+	t.logMu.Lock()
+	defer t.logMu.Unlock()
+	now := time.Now()
+	if last, ok := t.logged[key]; ok && now.Sub(last) < logEvery {
+		return false
+	}
+	if len(t.logged) >= 1024 {
+		clear(t.logged)
+	}
+	t.logged[key] = now
+	return true
+}
 
 func (t *Transport) Close() error {
 	select {
@@ -173,7 +199,12 @@ func (t *Transport) dialVersion(id raft.NodeID, addr string, kind byte) (net.Con
 	v := uint64(1)
 	if kind == streamMessages {
 		c.SetReadDeadline(time.Now().Add(min(t.cfg.IOTimeout, versionWait)))
-		if typ, p, err := readFrame(r); err == nil && typ == frameVersion {
+		typ, p, err := readFrame(r)
+		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.untrack(c)
+			return nil, nil, nil, 0, err
+		}
+		if err == nil && typ == frameVersion {
 			d := decoder{b: p}
 			if x := d.uvarint(); d.err == nil && x >= 1 {
 				v = x
@@ -188,8 +219,19 @@ func (t *Transport) accept() {
 	defer t.wg.Done()
 	for {
 		c, err := t.ln.Accept()
-		if err != nil {
+		if errors.Is(err, net.ErrClosed) {
 			return
+		}
+		if err != nil {
+			if t.allow("accept") {
+				t.cfg.Logger.Warn("cannot accept connections", "err", err)
+			}
+			select {
+			case <-t.done:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
 		}
 		if !t.track(c) {
 			return
@@ -205,19 +247,30 @@ func (t *Transport) accept() {
 
 func (t *Transport) serve(c net.Conn) {
 	c.SetDeadline(time.Now().Add(t.cfg.IOTimeout))
+	remote := c.RemoteAddr().String()
+	reject := func(msg string, args ...any) {
+		if host, _, _ := net.SplitHostPort(remote); t.allow("accept " + host) {
+			t.cfg.Logger.Warn(msg, append([]any{"remote", remote}, args...)...)
+		}
+	}
 	r := bufio.NewReaderSize(c, 64<<10)
 	p, err := expectFrame(r, frameHello)
 	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			reject("rejected a connection", "err", err)
+		}
 		return
 	}
 	h, err := decodeHello(p)
 	if err != nil || h.to != string(t.cfg.ID) {
+		reject("rejected a connection with a bad hello", "to", h.to, "err", err)
 		return
 	}
 	from := raft.NodeID(h.from)
 	if tc, ok := c.(*tls.Conn); ok {
 		id, err := Identity(tc.ConnectionState())
 		if err != nil || id != from {
+			reject("rejected a connection whose certificate names another node", "from", from, "certificate", id, "err", err)
 			return
 		}
 	}
@@ -225,6 +278,7 @@ func (t *Transport) serve(c net.Conn) {
 		t.cfg.UnknownPeer(from, h.addr)
 	}
 	if t.peer(from) == nil {
+		reject("rejected a connection from an unknown node", "from", from, "addr", h.addr)
 		return
 	}
 	if h.kind == streamMessages && h.max > 0 {
@@ -243,17 +297,27 @@ func (t *Transport) serve(c net.Conn) {
 }
 
 func (t *Transport) receiveMessages(r *bufio.Reader, from raft.NodeID) {
+	drop := func(err error) {
+		if t.allow("receive " + string(from)) {
+			t.cfg.Logger.Warn("dropped a connection from a peer", "peer", from, "err", err)
+		}
+	}
 	for {
 		p, err := expectFrame(r, frameMessages)
+		if errors.Is(err, errFrame) {
+			drop(err)
+		}
 		if err != nil {
 			return
 		}
 		msgs, err := decodeBatch(p)
 		if err != nil {
+			drop(err)
 			return
 		}
 		for _, m := range msgs {
 			if m.From != from || m.To != t.cfg.ID || m.Type == raft.MsgSnap {
+				drop(fmt.Errorf("transport: unexpected %v from %s to %s", m.Type, m.From, m.To))
 				return
 			}
 			t.cfg.Handler.Receive(m)
@@ -358,9 +422,17 @@ func (p *peer) drop(q []raft.Message) {
 func (p *peer) run() {
 	defer p.t.wg.Done()
 	backoff := 20 * time.Millisecond
+	var down time.Time
 	for {
-		c, _, w, v, err := p.t.dialVersion(p.id, p.address(), streamMessages)
+		addr := p.address()
+		c, _, w, v, err := p.t.dialVersion(p.id, addr, streamMessages)
 		if err != nil {
+			if down.IsZero() {
+				down = time.Now()
+			}
+			if !errors.Is(err, ErrClosed) && p.t.allow("dial "+string(p.id)) {
+				p.t.cfg.Logger.Warn("cannot connect to a peer", "peer", p.id, "addr", addr, "err", err)
+			}
 			p.drop(p.take())
 			select {
 			case <-p.t.done:
@@ -372,12 +444,20 @@ func (p *peer) run() {
 			backoff = min(2*backoff, time.Second)
 			continue
 		}
+		if !down.IsZero() && p.t.allow("connect "+string(p.id)) {
+			p.t.cfg.Logger.Info("connected to a peer", "peer", p.id, "addr", addr, "after", time.Since(down).Round(time.Millisecond))
+		}
+		down = time.Time{}
 		p.version.Store(v)
 		backoff = 20 * time.Millisecond
 		err = p.stream(c, w)
 		p.t.untrack(c)
 		if errors.Is(err, ErrClosed) {
 			return
+		}
+		down = time.Now()
+		if p.t.allow("send " + string(p.id)) {
+			p.t.cfg.Logger.Warn("lost the connection to a peer", "peer", p.id, "addr", addr, "err", err)
 		}
 		select {
 		case <-p.t.done:
