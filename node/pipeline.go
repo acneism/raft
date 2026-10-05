@@ -70,6 +70,14 @@ func (n *Node) run() {
 			n.mu.Unlock()
 		case <-compact.C:
 			n.aq.push(applyJob{})
+		case by := <-n.removedc:
+			n.wmu.Lock()
+			member := n.member
+			n.wmu.Unlock()
+			if member {
+				n.logger.Warn("a member says this node was removed from the cluster", "by", by)
+				n.fail(ErrRemoved)
+			}
 		case m := <-n.recvc:
 			n.mu.Lock()
 			n.step(m)

@@ -104,8 +104,11 @@ err = n.Remove(ctx, "n1")
 ```
 
 The members dial the new node once they add it, and the node learns their addresses from the connections it accepts
-before it has a configuration. `Promote` waits until the learner has caught up. Stop a removed node: running on with its old configuration it can
-disturb the cluster.
+before it has a configuration. `Promote` waits until the learner has caught up.
+
+A removed node stops by itself, and `Err` returns `node.ErrRemoved`: the members that applied the removal drop its
+connections and tell it on its next dial. They remember removed nodes until they restart, so a node that was down
+during its removal and comes back after that is refused but not told; stop it yourself.
 
 ## Demo
 

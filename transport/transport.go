@@ -19,7 +19,11 @@ import (
 
 const logEvery = 30 * time.Second
 
-var ErrClosed = errors.New("transport: closed")
+var (
+	ErrClosed  = errors.New("transport: closed")
+	errRemoved = errors.New("transport: the peer says this node was removed from the cluster")
+	errHangUp  = errors.New("transport: the peer closed the connection")
+)
 
 type Handler interface {
 	Receive(m raft.Message)
@@ -41,6 +45,8 @@ type Config struct {
 	DialTimeout   time.Duration
 	IOTimeout     time.Duration
 	UnknownPeer   func(id raft.NodeID, addr string)
+	IsRemoved     func(id raft.NodeID) bool
+	OnRemoved     func(by raft.NodeID)
 	Logger        *slog.Logger
 }
 
@@ -51,7 +57,7 @@ type Transport struct {
 	done   chan struct{}
 	wg     sync.WaitGroup
 	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
+	conns  map[net.Conn]raft.NodeID
 	snaps  map[raft.NodeID]bool
 	logMu  sync.Mutex
 	logged map[string]time.Time
@@ -87,7 +93,7 @@ func New(cfg Config) (*Transport, error) {
 		ln:     ln,
 		peers:  map[raft.NodeID]*peer{},
 		done:   make(chan struct{}),
-		conns:  map[net.Conn]struct{}{},
+		conns:  map[net.Conn]raft.NodeID{},
 		snaps:  map[raft.NodeID]bool{},
 		logged: map[string]time.Time{},
 	}
@@ -141,7 +147,7 @@ func (t *Transport) track(c net.Conn) bool {
 		return false
 	default:
 	}
-	t.conns[c] = struct{}{}
+	t.conns[c] = raft.None
 	return true
 }
 
@@ -203,6 +209,13 @@ func (t *Transport) dialVersion(id raft.NodeID, addr string, kind byte) (net.Con
 		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			t.untrack(c)
 			return nil, nil, nil, 0, err
+		}
+		if err == nil && typ == frameRemoved {
+			t.untrack(c)
+			if t.cfg.OnRemoved != nil {
+				t.cfg.OnRemoved(id)
+			}
+			return nil, nil, nil, 0, errRemoved
 		}
 		if err == nil && typ == frameVersion {
 			d := decoder{b: p}
@@ -277,7 +290,17 @@ func (t *Transport) serve(c net.Conn) {
 	if t.peer(from) == nil && h.addr != "" && t.cfg.UnknownPeer != nil {
 		t.cfg.UnknownPeer(from, h.addr)
 	}
-	if t.peer(from) == nil {
+	if !t.inbound(c, from) {
+		if h.kind == streamMessages && h.max >= 2 && t.cfg.IsRemoved != nil && t.cfg.IsRemoved(from) {
+			w := bufio.NewWriterSize(c, 64)
+			if writeFrame(w, frameRemoved, nil) == nil {
+				w.Flush()
+			}
+			if t.allow("removed " + string(from)) {
+				t.cfg.Logger.Info("told a removed node that it was removed", "from", from, "remote", remote)
+			}
+			return
+		}
 		reject("rejected a connection from an unknown node", "from", from, "addr", h.addr)
 		return
 	}
@@ -294,6 +317,16 @@ func (t *Transport) serve(c net.Conn) {
 	case streamSnapshot:
 		t.receiveSnapshot(c, r, from)
 	}
+}
+
+func (t *Transport) inbound(c net.Conn, from raft.NodeID) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.peers[from] == nil {
+		return false
+	}
+	t.conns[c] = from
+	return true
 }
 
 func (t *Transport) receiveMessages(r *bufio.Reader, from raft.NodeID) {
@@ -425,7 +458,7 @@ func (p *peer) run() {
 	var down time.Time
 	for {
 		addr := p.address()
-		c, _, w, v, err := p.t.dialVersion(p.id, addr, streamMessages)
+		c, r, w, v, err := p.t.dialVersion(p.id, addr, streamMessages)
 		if err != nil {
 			if down.IsZero() {
 				down = time.Now()
@@ -450,8 +483,14 @@ func (p *peer) run() {
 		down = time.Time{}
 		p.version.Store(v)
 		backoff = 20 * time.Millisecond
-		err = p.stream(c, w)
+		hungUp := make(chan struct{})
+		go func() {
+			io.Copy(io.Discard, r)
+			close(hungUp)
+		}()
+		err = p.stream(c, w, hungUp)
 		p.t.untrack(c)
+		<-hungUp
 		if errors.Is(err, ErrClosed) {
 			return
 		}
@@ -469,7 +508,7 @@ func (p *peer) run() {
 	}
 }
 
-func (p *peer) stream(c net.Conn, w *bufio.Writer) error {
+func (p *peer) stream(c net.Conn, w *bufio.Writer, hungUp <-chan struct{}) error {
 	var buf []byte
 	for {
 		select {
@@ -477,6 +516,8 @@ func (p *peer) stream(c net.Conn, w *bufio.Writer) error {
 			return ErrClosed
 		case <-p.stop:
 			return ErrClosed
+		case <-hungUp:
+			return errHangUp
 		case <-p.notify:
 		}
 		q := p.take()
@@ -526,6 +567,11 @@ func (t *Transport) RemovePeer(id raft.NodeID) {
 	if p := t.peers[id]; p != nil {
 		delete(t.peers, id)
 		close(p.stop)
+	}
+	for c, from := range t.conns {
+		if from == id {
+			c.Close()
+		}
 	}
 }
 

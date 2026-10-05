@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/acneism/raft"
@@ -48,6 +49,15 @@ func (n *Node) applyEntries(ents []raft.Entry) error {
 func (n *Node) setConf(cs raft.ConfState) {
 	n.wmu.Lock()
 	defer n.wmu.Unlock()
+	for _, id := range slices.Concat(n.conf.Voters, n.conf.Learners) {
+		if !cs.IsVoter(id) && !cs.IsLearner(id) {
+			n.removed[id] = true
+		}
+	}
+	for _, id := range slices.Concat(cs.Voters, cs.Learners) {
+		delete(n.removed, id)
+	}
+	n.member = n.member || cs.IsVoter(n.id) || cs.IsLearner(n.id)
 	n.conf = cs.Clone()
 	if n.tr == nil || len(cs.Addrs) == 0 {
 		return
@@ -74,6 +84,19 @@ func (n *Node) admit(id raft.NodeID, addr string) {
 	}
 	n.peerAddrs[id] = addr
 	n.tr.AddPeer(id, addr)
+}
+
+func (n *Node) isRemoved(id raft.NodeID) bool {
+	n.wmu.Lock()
+	defer n.wmu.Unlock()
+	return n.removed[id]
+}
+
+func (n *Node) onRemoved(by raft.NodeID) {
+	select {
+	case n.removedc <- by:
+	default:
+	}
 }
 
 func (n *Node) ConfState() raft.ConfState {

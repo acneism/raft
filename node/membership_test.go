@@ -126,3 +126,39 @@ func TestJoinKnowingOnlyItself(t *testing.T) {
 	c.write("b", "2")
 	c.converged(5 * time.Second)
 }
+
+func waitErr(t *testing.T, m *member, want error) {
+	t.Helper()
+	deadline := time.Now().Add(slowDisk)
+	for !errors.Is(m.n.Err(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: Err() = %v, want %v", m.id, m.n.Err(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRemovedNodeStops(t *testing.T) {
+	c := newCluster(t, 3, nil)
+	c.write("a", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	l := c.leader(5 * time.Second)
+	var live, down raft.NodeID
+	for _, id := range []raft.NodeID{"n1", "n2", "n3"} {
+		switch {
+		case id == l.id:
+		case live == "":
+			live = id
+		default:
+			down = id
+		}
+	}
+	c.stop(down)
+	c.change(ctx, func(l *member) error { return l.n.Remove(ctx, down) })
+	c.change(ctx, func(l *member) error { return l.n.Remove(ctx, live) })
+	waitErr(t, c.members[live], node.ErrRemoved)
+	c.start(down)
+	waitErr(t, c.members[down], node.ErrRemoved)
+	c.write("b", "2")
+}

@@ -19,6 +19,7 @@ const (
 	frameSnapDone
 	frameSnapResult
 	frameVersion
+	frameRemoved
 )
 
 const (
@@ -26,7 +27,7 @@ const (
 	maxFrame        = 64 << 20
 	versionWait     = time.Second
 	helloVersion    = 1
-	protocolVersion = 1
+	protocolVersion = 2
 )
 
 const (

@@ -24,6 +24,7 @@ var (
 	ErrUnknown        = errors.New("node: proposal outcome unknown")
 	ErrClosed         = errors.New("node: closed")
 	ErrTransferFailed = errors.New("node: leadership transfer failed")
+	ErrRemoved        = errors.New("node: removed from the cluster")
 
 	ErrTransferBehind    = fmt.Errorf("%w: the target did not catch up within an election timeout", ErrTransferFailed)
 	ErrTransferTimeout   = fmt.Errorf("%w: the target did not win an election within an election timeout", ErrTransferFailed)
@@ -122,6 +123,9 @@ type Node struct {
 	eventOut   chan Event
 	snapWanted atomic.Bool
 	peerAddrs  map[raft.NodeID]string
+	removed    map[raft.NodeID]bool
+	member     bool
+	removedc   chan raft.NodeID
 }
 
 type report struct {
@@ -184,6 +188,8 @@ func Open(cfg Config) (*Node, error) {
 		eventOut:   make(chan Event, 64),
 		reads:      map[uint64][]chan readResult{},
 		changed:    make(chan struct{}),
+		removed:    map[raft.NodeID]bool{},
+		removedc:   make(chan raft.NodeID, 1),
 	}
 	n.pq.init()
 	n.aq.init()
@@ -248,6 +254,7 @@ func (n *Node) start() error {
 	n.applied = applied
 	_, conf, _ := n.log.InitialState()
 	n.conf = conf
+	n.member = conf.IsVoter(n.id) || conf.IsLearner(n.id)
 	addrs := n.cfg.Peers
 	if len(conf.Addrs) > 0 {
 		addrs = conf.Addrs
@@ -268,6 +275,8 @@ func (n *Node) start() error {
 		Handler:     n,
 		SnapshotDir: n.snapRoot,
 		UnknownPeer: n.admit,
+		IsRemoved:   n.isRemoved,
+		OnRemoved:   n.onRemoved,
 		Logger:      n.logger,
 	})
 	if err != nil {
