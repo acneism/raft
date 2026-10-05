@@ -46,15 +46,24 @@ func TestTransferLeadershipToStoppedNodeFails(t *testing.T) {
 			break
 		}
 	}
-	c.stop(to)
 	c.write("k", "v")
+	deadline := time.Now().Add(slowDisk)
+	for st := l.n.Status(); st.Progress[to].Match != st.LastIndex; st = l.n.Status() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never caught up: %+v", to, st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.stop(to)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := l.n.TransferLeadership(ctx, to); !errors.Is(err, node.ErrTransferFailed) {
-		t.Fatalf("transfer to a stopped node: %v", err)
-	}
-	if st := l.n.Status(); st.State != raft.StateLeader {
-		t.Fatalf("old leader is %v after the failed transfer", st.State)
+	if err := l.n.TransferLeadership(ctx, to); !errors.Is(err, node.ErrTransferTimeout) {
+		t.Fatalf("transfer to a stopped node that was up to date: %v", err)
 	}
 	c.write("k", "w")
+	err := c.leader(5*time.Second).n.TransferLeadership(ctx, to)
+	if !errors.Is(err, node.ErrTransferBehind) || !errors.Is(err, node.ErrTransferFailed) {
+		t.Fatalf("transfer to a stopped node that lags: %v", err)
+	}
+	c.write("k", "x")
 }

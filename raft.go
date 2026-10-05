@@ -74,6 +74,7 @@ type Core struct {
 	leadTransferee  NodeID
 	transferElapsed int
 	transferVote    bool
+	transferSent    bool
 
 	msgs             []Message
 	msgsAfterPersist []Message
@@ -164,6 +165,7 @@ type Status struct {
 	LastIndex      uint64
 	LeaderReady    bool
 	LeadTransferee NodeID
+	TransferSent   bool
 }
 
 func (c *Core) Status() Status {
@@ -175,6 +177,7 @@ func (c *Core) Status() Status {
 		LastIndex:      c.log.lastIndex(),
 		LeaderReady:    c.leaderReady(),
 		LeadTransferee: c.leadTransferee,
+		TransferSent:   c.transferSent,
 	}
 }
 
@@ -275,7 +278,7 @@ func (c *Core) reset(term uint64) {
 	c.trk.resetVotes()
 	c.noopIndex = 0
 	c.sendPending = false
-	c.leadTransferee, c.transferElapsed, c.transferVote = None, 0, false
+	c.leadTransferee, c.transferElapsed, c.transferVote, c.transferSent = None, 0, false, false
 	c.transferTried = false
 	clear(c.sentAt)
 	c.leaseFloor = c.readSeq
@@ -523,8 +526,7 @@ func (c *Core) stepLeader(m Message) {
 			c.maybeCommit()
 		}
 		if m.From == c.leadTransferee && pr.Match == c.log.lastIndex() {
-			c.send(Message{To: m.From, Type: MsgTimeoutNow})
-			c.transferTried = true
+			c.sendTimeoutNow()
 		}
 	case MsgHeartbeatResp:
 		pr.RecentActive = true

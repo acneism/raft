@@ -23,9 +23,11 @@ func (n *Node) TransferLeadership(ctx context.Context, to raft.NodeID) error {
 		case st.Lead == to:
 			return nil
 		case st.Term > start && st.Lead != raft.None:
-			return ErrTransferFailed
+			return ErrTransferPreempted
+		case st.State == raft.StateLeader && st.LeadTransferee != to && st.TransferSent:
+			return ErrTransferTimeout
 		case st.State == raft.StateLeader && st.LeadTransferee != to:
-			return ErrTransferFailed
+			return ErrTransferBehind
 		}
 		select {
 		case <-changed:

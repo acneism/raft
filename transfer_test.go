@@ -80,3 +80,45 @@ func TestTransferLeadershipRejects(t *testing.T) {
 		t.Fatalf("transfer from a follower: %v", err)
 	}
 }
+
+func TestTransferAbortsWhenTargetDoesNotCatchUp(t *testing.T) {
+	nw := newNetwork(t, 3)
+	nw.campaign("1")
+	nw.cut["3"] = true
+	nw.propose(t, "1", "x")
+	if err := nw.nodes["1"].core.TransferLeadership("3"); err != nil {
+		t.Fatal(err)
+	}
+	nw.tick("1", testElection)
+	if st := nw.status("1"); st.State != StateLeader || st.LeadTransferee != None || st.TransferSent {
+		t.Fatalf("after the catch-up window: %v, transferee %q, sent %v", st.State, st.LeadTransferee, st.TransferSent)
+	}
+}
+
+func TestTransferElectionTimeoutStartsAtTimeoutNow(t *testing.T) {
+	nw := newNetwork(t, 3)
+	nw.campaign("1")
+	nw.cut["3"] = true
+	nw.propose(t, "1", "x")
+	if err := nw.nodes["1"].core.TransferLeadership("3"); err != nil {
+		t.Fatal(err)
+	}
+	nw.tick("1", testElection-2)
+	if st := nw.status("1"); st.LeadTransferee != "3" || st.TransferSent {
+		t.Fatalf("while the target lags: transferee %q, sent %v", st.LeadTransferee, st.TransferSent)
+	}
+	delete(nw.cut, "3")
+	nw.filter = func(m Message) bool { return m.Type != MsgTimeoutNow }
+	nw.tick("1", 1)
+	if st := nw.status("1"); st.LeadTransferee != "3" || !st.TransferSent {
+		t.Fatalf("after catching up: transferee %q, sent %v", st.LeadTransferee, st.TransferSent)
+	}
+	nw.tick("1", testElection-1)
+	if st := nw.status("1"); st.LeadTransferee != "3" {
+		t.Fatalf("transfer aborted %d ticks after MsgTimeoutNow", testElection-1)
+	}
+	nw.tick("1", 1)
+	if st := nw.status("1"); st.State != StateLeader || st.LeadTransferee != None || !st.TransferSent {
+		t.Fatalf("after the election window: %v, transferee %q, sent %v", st.State, st.LeadTransferee, st.TransferSent)
+	}
+}

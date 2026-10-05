@@ -15,15 +15,22 @@ func (c *Core) TransferLeadership(to NodeID) error {
 	if !c.trk.isVoter(to) {
 		return ErrTransferTarget
 	}
-	c.leadTransferee, c.transferElapsed = to, 0
+	c.leadTransferee, c.transferElapsed, c.transferSent = to, 0, false
 	if pr := c.trk.progress[to]; pr.Match == c.log.lastIndex() {
-		c.send(Message{To: to, Type: MsgTimeoutNow})
-		c.transferTried = true
+		c.sendTimeoutNow()
 	} else {
 		pr.forceSend = true
 		c.sendPending = true
 	}
 	return nil
+}
+
+func (c *Core) sendTimeoutNow() {
+	c.send(Message{To: c.leadTransferee, Type: MsgTimeoutNow})
+	if !c.transferSent {
+		c.transferSent, c.transferElapsed = true, 0
+	}
+	c.transferTried = true
 }
 
 func (c *Core) campaignTransfer() {

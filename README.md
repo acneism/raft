@@ -27,7 +27,8 @@ go get github.com/acneism/raft
   concurrent reads and works on followers. With `LeaseReads` the leader answers from its lease without a round,
   assuming node clocks run at rates that differ by at most `MaxClockDrift`.
 - **Leadership transfer.** `TransferLeadership` brings the target up to date and hands leadership over without waiting
-  for an election timeout.
+  for an election timeout. Catching up and the election get an election timeout each, and a failed transfer says
+  which of them ran out or that another node won.
 - **Membership changes.** A new node joins as a learner, catches up from the log or a snapshot and is promoted to
   voter; members are removed one change at a time. The configuration, with member addresses, travels in the log.
 - **Simulation.** A deterministic cluster simulator with network, disk and clock faults checks the Raft safety

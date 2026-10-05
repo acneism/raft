@@ -24,6 +24,10 @@ var (
 	ErrUnknown        = errors.New("node: proposal outcome unknown")
 	ErrClosed         = errors.New("node: closed")
 	ErrTransferFailed = errors.New("node: leadership transfer failed")
+
+	ErrTransferBehind    = fmt.Errorf("%w: the target did not catch up within an election timeout", ErrTransferFailed)
+	ErrTransferTimeout   = fmt.Errorf("%w: the target did not win an election within an election timeout", ErrTransferFailed)
+	ErrTransferPreempted = fmt.Errorf("%w: another node won the election", ErrTransferFailed)
 )
 
 type Proposal struct {
