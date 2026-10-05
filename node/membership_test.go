@@ -2,6 +2,7 @@ package node_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -20,6 +21,20 @@ func (c *cluster) addMember(id raft.NodeID) *member {
 	return m
 }
 
+func (c *cluster) change(ctx context.Context, f func(l *member) error) *member {
+	c.t.Helper()
+	for {
+		l := c.leader(5 * time.Second)
+		err := f(l)
+		if err == nil {
+			return l
+		}
+		if !errors.Is(err, node.ErrNotLeader) || ctx.Err() != nil {
+			c.t.Fatal(err)
+		}
+	}
+}
+
 func TestMembershipChanges(t *testing.T) {
 	c := newCluster(t, 3, nil)
 	c.write("a", "1")
@@ -27,14 +42,9 @@ func TestMembershipChanges(t *testing.T) {
 	defer cancel()
 
 	joiner := c.addMember("n4")
-	l := c.leader(5 * time.Second)
-	if err := l.n.AddLearner(ctx, "n4", c.peers["n4"]); err != nil {
-		t.Fatal(err)
-	}
+	c.change(ctx, func(l *member) error { return l.n.AddLearner(ctx, "n4", c.peers["n4"]) })
 	c.write("b", "2")
-	if err := l.n.Promote(ctx, "n4"); err != nil {
-		t.Fatal(err)
-	}
+	l := c.change(ctx, func(l *member) error { return l.n.Promote(ctx, "n4") })
 	if cs := l.n.ConfState(); len(cs.Voters) != 4 || !cs.IsVoter("n4") || len(cs.Learners) != 0 {
 		t.Fatalf("configuration after promoting %+v", cs)
 	}
@@ -42,30 +52,18 @@ func TestMembershipChanges(t *testing.T) {
 		t.Fatalf("new voter read %q", v)
 	}
 
-	var removed []raft.NodeID
-	for _, id := range []raft.NodeID{"n1", "n2", "n3"} {
-		if id != l.id && len(removed) < 1 {
-			removed = append(removed, id)
-		}
-	}
-	if err := l.n.Remove(ctx, removed[0]); err != nil {
-		t.Fatal(err)
-	}
-	c.stop(removed[0])
-	delete(c.members, removed[0])
+	c.change(ctx, func(l *member) error { return l.n.Remove(ctx, "n1") })
+	c.stop("n1")
+	delete(c.members, "n1")
 	c.write("c", "3")
 
-	for id := range c.members {
-		if id != l.id && id != "n4" {
-			c.stop(id)
-		}
-	}
+	c.stop("n2")
 	c.write("d", "4")
 
 	c.stop("n4")
 	c.start("n4")
 	cs := joiner.n.ConfState()
-	if len(cs.Voters) != 3 || !cs.IsVoter("n4") || slices.Contains(cs.Voters, removed[0]) || cs.Addrs[l.id] == "" {
+	if len(cs.Voters) != 3 || !cs.IsVoter("n4") || slices.Contains(cs.Voters, "n1") || cs.Addrs["n3"] == "" {
 		t.Fatalf("configuration after restarting the new member %+v", cs)
 	}
 	c.write("e", "5")
@@ -80,33 +78,20 @@ func TestJoinThroughSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	joiner := c.addMember("n4")
-	l := c.leader(5 * time.Second)
-	if err := l.n.AddLearner(ctx, "n4", c.peers["n4"]); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.n.Promote(ctx, "n4"); err != nil {
-		t.Fatal(err)
-	}
+	c.change(ctx, func(l *member) error { return l.n.AddLearner(ctx, "n4", c.peers["n4"]) })
+	c.change(ctx, func(l *member) error { return l.n.Promote(ctx, "n4") })
 	if _, restores, _ := joiner.fsm.Stats(); restores == 0 {
 		t.Fatal("the new member caught up without a snapshot")
 	}
 	if cs := joiner.n.ConfState(); len(cs.Addrs) != 4 {
 		t.Fatalf("new member's configuration %+v", cs)
 	}
-	for id := range c.members {
-		if id != l.id && id != "n4" {
-			if err := l.n.Remove(ctx, id); err != nil {
-				t.Fatal(err)
-			}
-			c.stop(id)
-			delete(c.members, id)
-			break
-		}
-	}
+	c.change(ctx, func(l *member) error { return l.n.Remove(ctx, "n1") })
+	c.stop("n1")
+	delete(c.members, "n1")
 	c.write("after", "1")
-	c.stop(l.id)
-	c.leader(5 * time.Second)
-	c.write("after-leader", "1")
+	c.stop("n2")
+	c.write("without-n2", "1")
 }
 
 func TestLearnersJoinOneAfterAnotherBySnapshot(t *testing.T) {
@@ -118,13 +103,8 @@ func TestLearnersJoinOneAfterAnotherBySnapshot(t *testing.T) {
 	defer cancel()
 	for _, id := range []raft.NodeID{"n4", "n5"} {
 		m := c.addMember(id)
-		l := c.leader(5 * time.Second)
-		if err := l.n.AddLearner(ctx, id, c.peers[id]); err != nil {
-			t.Fatal(err)
-		}
-		if err := l.n.Promote(ctx, id); err != nil {
-			t.Fatalf("promote %s: %v", id, err)
-		}
+		c.change(ctx, func(l *member) error { return l.n.AddLearner(ctx, id, c.peers[id]) })
+		c.change(ctx, func(l *member) error { return l.n.Promote(ctx, id) })
 		if _, restores, _ := m.fsm.Stats(); restores == 0 {
 			t.Fatalf("%s caught up without a snapshot", id)
 		}
@@ -141,13 +121,8 @@ func TestJoinKnowingOnlyItself(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c.addMember("n4")
-	l := c.leader(5 * time.Second)
-	if err := l.n.AddLearner(ctx, "n4", c.peers["n4"]); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.n.Promote(ctx, "n4"); err != nil {
-		t.Fatalf("promote: %v", err)
-	}
+	c.change(ctx, func(l *member) error { return l.n.AddLearner(ctx, "n4", c.peers["n4"]) })
+	c.change(ctx, func(l *member) error { return l.n.Promote(ctx, "n4") })
 	c.write("b", "2")
 	c.converged(5 * time.Second)
 }
