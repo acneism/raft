@@ -597,7 +597,12 @@ type storage struct {
 
 func (st storage) Snapshot() (raft.SnapshotMeta, error) {
 	snap, _ := st.MemoryStorage.Snapshot()
-	if first, _ := st.FirstIndex(); snap.Index+1 < first {
+	first, _ := st.FirstIndex()
+	stale := snap.Index+1 < first
+	for _, id := range append(slices.Clone(st.n.fsm.conf.Voters), st.n.fsm.conf.Learners...) {
+		stale = stale || !snap.Conf.IsVoter(id) && !snap.Conf.IsLearner(id)
+	}
+	if stale {
 		st.n.snapWanted = true
 		return raft.SnapshotMeta{}, raft.ErrSnapshotTemporarilyUnavailable
 	}

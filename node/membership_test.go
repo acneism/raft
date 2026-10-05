@@ -107,3 +107,25 @@ func TestJoinThroughSnapshot(t *testing.T) {
 	c.leader(5 * time.Second)
 	c.write("after-leader", "1")
 }
+
+func TestLearnersJoinOneAfterAnotherBySnapshot(t *testing.T) {
+	c := newCluster(t, 3, nil)
+	for i := range 600 {
+		c.write(fmt.Sprintf("k%d", i), "v")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, id := range []raft.NodeID{"n4", "n5"} {
+		m := c.addMember(id)
+		l := c.leader(5 * time.Second)
+		if err := l.n.AddLearner(ctx, id, c.peers[id]); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.n.Promote(ctx, id); err != nil {
+			t.Fatalf("promote %s: %v", id, err)
+		}
+		if _, restores, _ := m.fsm.Stats(); restores == 0 {
+			t.Fatalf("%s caught up without a snapshot", id)
+		}
+	}
+}

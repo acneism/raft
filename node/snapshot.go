@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"github.com/acneism/raft"
 	"github.com/acneism/raft/internal/fsx"
@@ -97,16 +96,29 @@ func (n *Node) installSnapshot(s raft.SnapshotMeta) error {
 
 type storage struct {
 	*wal.Log
-	wanted *atomic.Bool
+	n *Node
 }
 
 func (s storage) Snapshot() (raft.SnapshotMeta, error) {
 	snap, _ := s.Log.Snapshot()
-	if first, _ := s.FirstIndex(); snap.Index+1 < first {
-		s.wanted.Store(true)
+	if !s.n.snapshotUsable(snap) {
+		s.n.snapWanted.Store(true)
 		return raft.SnapshotMeta{}, raft.ErrSnapshotTemporarilyUnavailable
 	}
 	return snap, nil
+}
+
+func (n *Node) snapshotUsable(snap raft.SnapshotMeta) bool {
+	if first, _ := n.log.FirstIndex(); snap.Index+1 < first {
+		return false
+	}
+	cs := n.ConfState()
+	for _, id := range append(cs.Voters, cs.Learners...) {
+		if !snap.Conf.IsVoter(id) && !snap.Conf.IsLearner(id) {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *Node) maybeCompact() error {
@@ -129,10 +141,10 @@ func (n *Node) maybeSnapshot() error {
 		return nil
 	}
 	snap, _ := n.log.Snapshot()
-	first, _ := n.log.FirstIndex()
-	if snap.Index+1 >= first {
+	if n.snapshotUsable(snap) {
 		return nil
 	}
+	first, _ := n.log.FirstIndex()
 	n.wmu.Lock()
 	applied := n.applied
 	n.wmu.Unlock()

@@ -227,7 +227,7 @@ func (n *Node) start() error {
 		ID:              n.id,
 		ElectionTick:    n.cfg.ElectionTicks,
 		HeartbeatTick:   n.cfg.HeartbeatTicks,
-		Storage:         storage{n.log, &n.snapWanted},
+		Storage:         storage{n.log, n},
 		Applied:         applied,
 		MaxSizePerMsg:   n.cfg.MaxSizePerMsg,
 		MaxInflightMsgs: n.cfg.MaxInflightMsgs,
