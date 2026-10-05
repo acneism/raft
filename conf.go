@@ -192,6 +192,18 @@ func (c *Core) applyConf(cs ConfState) {
 	c.sendPending = true
 }
 
+func (c *Core) Progress() map[NodeID]PeerProgress {
+	if c.state != StateLeader {
+		return nil
+	}
+	out := make(map[NodeID]PeerProgress, len(c.trk.progress))
+	for id, pr := range c.trk.progress {
+		out[id] = PeerProgress{Match: pr.Match, Next: pr.Next, State: pr.State, PendingSnapshot: pr.PendingSnapshot,
+			Learner: pr.IsLearner, RecentActive: pr.RecentActive, Paused: pr.isPaused()}
+	}
+	return out
+}
+
 func (c *Core) Match(id NodeID) (uint64, bool) {
 	if c.state != StateLeader {
 		return 0, false

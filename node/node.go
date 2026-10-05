@@ -307,10 +307,21 @@ func (n *Node) ProposeIn(term uint64, data []byte) (Proposal, error) {
 	return Proposal{Index: idx, Term: t}, nil
 }
 
-func (n *Node) Status() raft.Status {
+type Status struct {
+	raft.Status
+	FirstIndex uint64
+	Snapshot   raft.SnapshotMeta
+	Progress   map[raft.NodeID]raft.PeerProgress
+}
+
+func (n *Node) Status() Status {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.core.Status()
+	st := Status{Status: n.core.Status(), Progress: n.core.Progress()}
+	n.mu.Unlock()
+	st.FirstIndex, _ = n.log.FirstIndex()
+	st.Snapshot, _ = n.log.Snapshot()
+	st.Snapshot.Conf = st.Snapshot.Conf.Clone()
+	return st
 }
 
 func (n *Node) Events() <-chan Event { return n.eventOut }

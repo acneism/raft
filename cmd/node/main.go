@@ -203,15 +203,22 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func (s *server) status(w http.ResponseWriter, r *http.Request) {
 	st := s.n.Status()
+	progress := map[raft.NodeID]any{}
+	for id, pr := range st.Progress {
+		progress[id] = map[string]any{"match": pr.Match, "next": pr.Next, "state": pr.State.String(), "active": pr.RecentActive, "paused": pr.Paused}
+	}
 	writeJSON(w, map[string]any{
-		"id":           s.id,
-		"state":        st.State.String(),
-		"term":         st.Term,
-		"leader":       st.Lead,
-		"commit":       st.Commit,
-		"applied":      st.Applied,
-		"last_index":   st.LastIndex,
-		"leader_ready": st.LeaderReady,
+		"id":             s.id,
+		"state":          st.State.String(),
+		"term":           st.Term,
+		"leader":         st.Lead,
+		"commit":         st.Commit,
+		"applied":        st.Applied,
+		"first_index":    st.FirstIndex,
+		"last_index":     st.LastIndex,
+		"snapshot_index": st.Snapshot.Index,
+		"leader_ready":   st.LeaderReady,
+		"progress":       progress,
 	})
 }
 

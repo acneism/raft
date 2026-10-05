@@ -770,3 +770,27 @@ func TestHeartbeatResponseDoesNotWaitForDisk(t *testing.T) {
 		t.Fatalf("heartbeat response held back: %+v / %+v", rd.Messages, rd.MessagesAfterPersist)
 	}
 }
+
+func TestProgressReportedByLeaderOnly(t *testing.T) {
+	nw := newNetwork(t, 3)
+	nw.campaign("1")
+	idx := nw.propose(t, "1", "a")
+	pr := nw.nodes["1"].core.Progress()
+	if len(pr) != 3 {
+		t.Fatalf("leader reported %d peers", len(pr))
+	}
+	for id, p := range pr {
+		if p.Match != idx || p.State != ProgressReplicate || p.Paused {
+			t.Fatalf("%s: %+v, want replicating at %d", id, p, idx)
+		}
+	}
+	if pr := nw.nodes["2"].core.Progress(); pr != nil {
+		t.Fatalf("follower reported progress %v", pr)
+	}
+	nw.cut["3"] = true
+	nw.nodes["1"].core.ReportUnreachable("3")
+	nw.propose(t, "1", "b")
+	if p := nw.nodes["1"].core.Progress()["3"]; p.State != ProgressProbe || !p.Paused || p.Match != idx {
+		t.Fatalf("unreachable follower %+v (%v), want a paused probe at %d", p, p.State, idx)
+	}
+}

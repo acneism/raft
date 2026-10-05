@@ -440,6 +440,12 @@ func TestSnapshotCatchUp(t *testing.T) {
 	if snapshots == 0 {
 		t.Fatal("no snapshot was taken for the lagging follower")
 	}
+	if st := c.leader(5 * time.Second).n.Status(); len(st.Progress) != 3 || st.FirstIndex <= 1 {
+		t.Fatalf("leader status %+v", st)
+	}
+	if st := c.members[lagging].n.Status(); st.Snapshot.Index == 0 || (st.Progress != nil) != (st.State == raft.StateLeader) {
+		t.Fatalf("lagging follower status %+v", st)
+	}
 	c.write("after", "1")
 	c.converged(5 * time.Second)
 	for _, m := range c.members {

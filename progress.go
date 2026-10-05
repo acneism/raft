@@ -10,6 +10,27 @@ const (
 	ProgressSnapshot
 )
 
+func (s ProgressState) String() string {
+	switch s {
+	case ProgressProbe:
+		return "Probe"
+	case ProgressReplicate:
+		return "Replicate"
+	case ProgressSnapshot:
+		return "Snapshot"
+	}
+	return "Unknown"
+}
+
+type PeerProgress struct {
+	Match, Next     uint64
+	State           ProgressState
+	PendingSnapshot uint64
+	Learner         bool
+	RecentActive    bool
+	Paused          bool
+}
+
 type Progress struct {
 	Match, Next     uint64
 	State           ProgressState
